@@ -1,0 +1,10 @@
+Generic single-database configuration for Train Traffic Control System.
+
+To generate migrations:
+alembic revision --autogenerate -m "description"
+
+To upgrade database:
+alembic upgrade head
+
+To downgrade:
+alembic downgrade -1

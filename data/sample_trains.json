@@ -1,0 +1,185 @@
+{
+    "sample_trains": [
+        {
+            "train_id": "EXP001",
+            "type": "Express",
+            "arrival_time": "2025-09-02T10:00:00",
+            "departure_time": "2025-09-02T10:15:00",
+            "section_id": "SEC01", 
+            "platform_need": "P1",
+            "priority": 9,
+            "origin": "Central Station",
+            "destination": "North Terminal",
+            "capacity": 400
+        },
+        {
+            "train_id": "PASS002",
+            "type": "Passenger", 
+            "arrival_time": "2025-09-02T10:20:00",
+            "departure_time": "2025-09-02T10:35:00",
+            "section_id": "SEC01",
+            "platform_need": "P2",
+            "priority": 6,
+            "origin": "West Junction", 
+            "destination": "East Station",
+            "capacity": 300
+        },
+        {
+            "train_id": "FRT003",
+            "type": "Freight",
+            "arrival_time": "2025-09-02T12:00:00", 
+            "departure_time": "2025-09-02T12:30:00",
+            "section_id": "SEC02",
+            "platform_need": "P3",
+            "priority": 3,
+            "origin": "Cargo Terminal",
+            "destination": "Industrial Zone",
+            "capacity": 1000
+        },
+        {
+            "train_id": "LOC004", 
+            "type": "Local",
+            "arrival_time": "2025-09-02T10:10:00",
+            "departure_time": "2025-09-02T10:22:00", 
+            "section_id": "SEC01",
+            "platform_need": "P1",
+            "priority": 4,
+            "origin": "Suburb Station",
+            "destination": "City Center",
+            "capacity": 150
+        },
+        {
+            "train_id": "EXP005",
+            "type": "Express",
+            "arrival_time": "2025-09-02T12:15:00",
+            "departure_time": "2025-09-02T12:25:00",
+            "section_id": "SEC03", 
+            "platform_need": "P1",
+            "priority": 10,
+            "origin": "Airport Terminal",
+            "destination": "Downtown",
+            "capacity": 350
+        },
+        {
+            "train_id": "PASS006",
+            "type": "Passenger",
+            "arrival_time": "2025-09-02T11:30:00",
+            "departure_time": "2025-09-02T11:45:00",
+            "section_id": "SEC02",
+            "platform_need": "P2", 
+            "priority": 5,
+            "origin": "South Terminal",
+            "destination": "North Junction",
+            "capacity": 280
+        },
+        {
+            "train_id": "FRT007",
+            "type": "Freight", 
+            "arrival_time": "2025-09-02T13:00:00",
+            "departure_time": "2025-09-02T13:45:00",
+            "section_id": "SEC03",
+            "platform_need": "P4",
+            "priority": 2,
+            "origin": "Port Authority", 
+            "destination": "Inland Depot",
+            "capacity": 1200
+        },
+        {
+            "train_id": "LOC008",
+            "type": "Local",
+            "arrival_time": "2025-09-02T10:50:00",
+            "departure_time": "2025-09-02T11:05:00",
+            "section_id": "SEC01",
+            "platform_need": "P1",
+            "priority": 4,
+            "origin": "Residential Area",
+            "destination": "Business District", 
+            "capacity": 180
+        }
+    ],
+    "sample_sections": [
+        {
+            "section_id": "SEC01",
+            "capacity": 2,
+            "length_km": 5.2,
+            "max_speed": 80,
+            "maintenance_windows": []
+        },
+        {
+            "section_id": "SEC02", 
+            "capacity": 1,
+            "length_km": 8.7,
+            "max_speed": 60,
+            "maintenance_windows": []
+        },
+        {
+            "section_id": "SEC03",
+            "capacity": 1,
+            "length_km": 3.1,
+            "max_speed": 100,
+            "maintenance_windows": []
+        }
+    ],
+    "sample_platforms": [
+        {
+            "platform_id": "P1",
+            "type": "passenger",
+            "capacity": 1
+        },
+        {
+            "platform_id": "P2", 
+            "type": "passenger",
+            "capacity": 1
+        },
+        {
+            "platform_id": "P3",
+            "type": "freight",
+            "capacity": 1
+        },
+        {
+            "platform_id": "P4",
+            "type": "mixed", 
+            "capacity": 1
+        }
+    ],
+    "optimization_example": {
+        "description": "Example optimization request for morning rush hour",
+        "trains": ["EXP001", "PASS002", "LOC004", "LOC008"],
+        "constraints": {
+            "max_delay_minutes": 20,
+            "priority_weight": 2.0,
+            "buffer_time_minutes": 3
+        },
+        "expected_conflicts": [
+            {
+                "section": "SEC01",
+                "conflicting_trains": ["EXP001", "LOC004", "LOC008"],
+                "resolution": "Priority-based scheduling with Express trains first"
+            }
+        ]
+    },
+    "disruption_scenarios": [
+        {
+            "name": "Signal Failure",
+            "type": "delay",
+            "affected_section": "SEC01", 
+            "delay_minutes": 30,
+            "affected_trains": ["EXP001", "PASS002", "LOC004"],
+            "description": "Signal equipment failure causing section delays"
+        },
+        {
+            "name": "Emergency Stop",
+            "type": "cancellation",
+            "affected_trains": ["FRT003"],
+            "description": "Freight train emergency stop due to cargo shift"
+        },
+        {
+            "name": "Track Maintenance",
+            "type": "capacity_reduction",
+            "affected_section": "SEC02",
+            "duration_hours": 2,
+            "capacity_reduction": 0.5,
+            "description": "Planned maintenance reducing track capacity"
+        }
+    ]
+}
