@@ -1,11 +1,15 @@
 """
 Pydantic schemas for schedule-related API operations.
 """
+from __future__ import annotations
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 from enum import Enum
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .train import Train
 
 class ScheduleStatus(str, Enum):
     """Schedule status enumeration."""
@@ -49,6 +53,8 @@ class Schedule(ScheduleBase):
     optimization_run_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # Removed circular reference to avoid recursion issues
+    # train: Optional["Train"] = None
 
     class Config:
         from_attributes = True
@@ -61,3 +67,5 @@ class OptimizationResult(BaseModel):
     metrics: dict = Field(..., description="Optimization metrics")
     computation_time: float = Field(..., description="Time taken for optimization")
     status: str = Field(..., description="Optimization status")
+
+

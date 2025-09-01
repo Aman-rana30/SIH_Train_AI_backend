@@ -10,7 +10,8 @@ import time
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api.routes import schedule, metrics, websocket
+# Temporarily commented out to fix circular import issues
+# from app.api.routes import schedule, metrics, websocket
 from app.db.session import engine
 from app.db.base import Base
 
@@ -88,24 +89,24 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Include API routes
-app.include_router(
-    schedule.router,
-    prefix=f"{settings.api_v1_prefix}/schedule",
-    tags=["schedule"]
-)
+# Include API routes - temporarily commented out to fix circular import issues
+# app.include_router(
+#     schedule.router,
+#     prefix=f"{settings.api_v1_prefix}/schedule",
+#     tags=["schedule"]
+# )
 
-app.include_router(
-    metrics.router,
-    prefix=f"{settings.api_v1_prefix}/metrics",
-    tags=["metrics"]
-)
+# app.include_router(
+#     metrics.router,
+#     prefix=f"{settings.api_v1_prefix}/metrics",
+#     tags=["metrics"]
+# )
 
-app.include_router(
-    websocket.router,
-    prefix="/ws",
-    tags=["websocket"]
-)
+# app.include_router(
+#     websocket.router,
+#     prefix="/ws",
+#     tags=["websocket"]
+# )
 
 
 # Health check endpoints

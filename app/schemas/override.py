@@ -1,10 +1,13 @@
 """
 Pydantic schemas for override-related API operations.
 """
+from __future__ import annotations
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from .train import Train
 
 class OverrideBase(BaseModel):
     """Base override schema."""
@@ -26,6 +29,8 @@ class Override(OverrideBase):
     id: int
     impact_delay: int
     timestamp: datetime
+    # Removed circular reference to avoid recursion issues
+    # train: Optional["Train"] = None
 
     class Config:
         from_attributes = True
@@ -38,3 +43,5 @@ class OverrideRequest(BaseModel):
     reason: Optional[str] = Field(None, description="Reason for override")
     new_schedule_time: Optional[datetime] = Field(None, description="New scheduled time")
     controller_id: str = Field(..., description="Controller making override")
+
+

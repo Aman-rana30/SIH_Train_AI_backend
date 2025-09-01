@@ -1,11 +1,16 @@
 """
 Pydantic schemas for train-related API operations.
 """
+from __future__ import annotations
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from enum import Enum
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .schedule import Schedule
+    from .override import Override
 
 class TrainType(str, Enum):
     """Train type enumeration."""
@@ -52,6 +57,9 @@ class Train(TrainBase):
     """Complete train schema for API responses."""
     id: int
     active: bool = True
+    # Removed circular references to avoid recursion issues
+    # schedules: List["Schedule"] = Field(default_factory=list)
+    # overrides: List["Override"] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -61,7 +69,7 @@ class OptimizationRequest(BaseModel):
     """Schema for optimization requests."""
     trains: list[TrainBase] = Field(..., description="List of trains to optimize")
     optimization_params: Optional[dict] = Field(
-        default_factory=dict, 
+        default_factory=dict,
         description="Additional optimization parameters"
     )
 
@@ -70,6 +78,8 @@ class WhatIfRequest(BaseModel):
     """Schema for what-if analysis requests."""
     disruption: dict = Field(..., description="Disruption parameters")
     affected_trains: Optional[list[str]] = Field(
-        None, 
+        None,
         description="List of affected train IDs"
     )
+
+

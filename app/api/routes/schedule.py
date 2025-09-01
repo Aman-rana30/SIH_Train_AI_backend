@@ -9,9 +9,69 @@ from datetime import datetime, timedelta
 import logging
 
 from app.core.dependencies import get_db
-from app.schemas.train import OptimizationRequest, WhatIfRequest, Train
-from app.schemas.schedule import OptimizationResult, Schedule, ScheduleCreate
-from app.schemas.override import OverrideRequest, Override
+from app.schemas.train import OptimizationRequest, WhatIfRequest
+# Temporarily commented out to fix circular import issues
+# from app.schemas.schedule import OptimizationResult, Schedule, ScheduleCreate
+# from app.schemas.override import OverrideRequest, Override
+
+# Temporary schemas to avoid circular imports
+from pydantic import BaseModel
+from typing import List, Dict, Any
+
+class OptimizationResult(BaseModel):
+    """Temporary schema for optimization results."""
+    optimization_run_id: str
+    schedules: List[Dict[str, Any]]
+    metrics: Dict[str, Any]
+    computation_time: float
+    status: str
+
+class ScheduleCreate(BaseModel):
+    """Temporary schema for schedule creation."""
+    schedule_id: str
+    train_id: int
+    planned_time: datetime
+    optimized_time: datetime
+    section_id: str
+    platform_id: str = None
+    status: str = "waiting"
+    delay_minutes: int = 0
+    optimization_run_id: str = None
+
+class OverrideRequest(BaseModel):
+    """Temporary schema for override requests."""
+    train_id: int
+    decision: str
+    reason: str = None
+    new_schedule_time: datetime = None
+    controller_id: str
+
+class Schedule(BaseModel):
+    """Temporary schema for schedule responses."""
+    id: int
+    schedule_id: str
+    train_id: int
+    planned_time: datetime
+    optimized_time: datetime
+    section_id: str
+    platform_id: str = None
+    status: str
+    delay_minutes: int
+    optimization_run_id: str = None
+    created_at: datetime
+    updated_at: datetime = None
+
+class Override(BaseModel):
+    """Temporary schema for override responses."""
+    id: int
+    override_id: str
+    train_id: int
+    controller_decision: str
+    ai_recommendation: str = None
+    reason: str = None
+    controller_id: str = None
+    impact_delay: int
+    timestamp: datetime
 from app.models.train import Train as TrainModel
 from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
 from app.models.override import Override as OverrideModel
