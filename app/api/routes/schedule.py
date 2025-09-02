@@ -14,78 +14,15 @@ from app.schemas.train import OptimizationRequest, WhatIfRequest
 # Import the broadcast function from the websocket routes
 from app.api.routes.websocket import broadcast_optimization_complete
 
-# Temporary schemas to avoid circular imports
-from typing import List, Dict, Any, Optional
-
-class ScheduleCreate(BaseModel):
-    """Temporary schema for schedule creation."""
-    schedule_id: str
-    train_id: int
-    planned_time: datetime
-    optimized_time: datetime
-    section_id: str
-    platform_id: str = None
-    status: str = "waiting"
-    delay_minutes: int = 0
-    optimization_run_id: str = None
-    
-    model_config = ConfigDict(from_attributes=True)
-
-class Schedule(BaseModel):
-    """Temporary schema for schedule responses."""
-    id: Optional[int] = None
-    schedule_id: str
-    train_id: int
-    planned_time: datetime
-    optimized_time: datetime
-    section_id: str
-    platform_id: str = None
-    status: str
-    delay_minutes: int
-    optimization_run_id: str = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    
-    model_config = ConfigDict(from_attributes=True)
-
-class OptimizationResult(BaseModel):
-    """Temporary schema for optimization results."""
-    optimization_run_id: str
-    schedules: List[Schedule]
-    metrics: Dict[str, Any]
-    computation_time: float
-    status: str
-    
-    model_config = ConfigDict(from_attributes=True)
-
-class OverrideRequest(BaseModel):
-    """Temporary schema for override requests."""
-    train_id: int
-    decision: str
-    reason: str = None
-    new_schedule_time: datetime = None
-    controller_id: str
-    
-    model_config = ConfigDict(from_attributes=True)
-
-class Override(BaseModel):
-    """Temporary schema for override responses."""
-    id: int
-    override_id: str
-    train_id: int
-    controller_decision: str
-    ai_recommendation: str = None
-    reason: str = None
-    controller_id: str = None
-    impact_delay: int
-    timestamp: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
+# Import proper schemas to avoid circular imports
+from app.schemas.schedule import Schedule, ScheduleCreate, OptimizationResult
+from app.schemas.override import Override, OverrideRequest
 
 # Import the SQLAlchemy model and Enum
 from app.models.train import Train as TrainModel, TrainType as TrainTypeModel
 from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
 from app.models.override import Override as OverrideModel
+from app.schemas.train import Train as TrainSchema
 from app.services.optimization.optimizer import TrainSchedulingOptimizer
 from app.services.optimization.models import (
     TrainData, OptimizationInput, DisruptionEvent
@@ -95,7 +32,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.post("/optimize", response_model=OptimizationResult)
+@router.post("/optimize")
 async def optimize_schedule(
     request: OptimizationRequest,
     db: Session = Depends(get_db)
@@ -238,7 +175,7 @@ async def optimize_schedule(
         )
 
 
-@router.post("/whatif", response_model=OptimizationResult)
+@router.post("/whatif")
 async def whatif_analysis(
     request: WhatIfRequest,
     db: Session = Depends(get_db)
@@ -332,7 +269,7 @@ async def whatif_analysis(
         )
 
 
-@router.get("/current", response_model=List[Schedule])
+@router.get("/current")
 async def get_current_schedule(db: Session = Depends(get_db)):
     """
     Get the current optimized schedule from database.
@@ -341,17 +278,53 @@ async def get_current_schedule(db: Session = Depends(get_db)):
         db: Database session
 
     Returns:
-        List of current active schedules
+        List of current active schedules with full train details
     """
     try:
-        schedules = db.query(ScheduleModel).filter(
+        # Join with train table to get full train details
+        schedules = db.query(ScheduleModel).join(
+            TrainModel, ScheduleModel.train_id == TrainModel.id
+        ).filter(
             ScheduleModel.status.in_([
                 ScheduleStatus.WAITING, 
                 ScheduleStatus.MOVING
             ])
         ).order_by(ScheduleModel.optimized_time).all()
 
-        return [Schedule.model_validate(schedule) for schedule in schedules]
+        # Create schedule objects with train details
+        result_schedules = []
+        for schedule in schedules:
+            # Get the associated train
+            train = db.query(TrainModel).filter(TrainModel.id == schedule.train_id).first()
+            
+            # Create schedule dict with train details
+            schedule_dict = {
+                "id": schedule.id,
+                "schedule_id": schedule.schedule_id,
+                "train_id": schedule.train_id,
+                "planned_time": schedule.planned_time,
+                "optimized_time": schedule.optimized_time,
+                "section_id": schedule.section_id,
+                "platform_id": schedule.platform_id,
+                "status": schedule.status.value if hasattr(schedule.status, 'value') else str(schedule.status),
+                "delay_minutes": schedule.delay_minutes,
+                "optimization_run_id": schedule.optimization_run_id,
+                "created_at": schedule.created_at,
+                "updated_at": schedule.updated_at,
+                "train": {
+                    "id": train.id,
+                    "train_id": train.train_id,
+                    "type": train.type.value if hasattr(train.type, 'value') else str(train.type),
+                    "origin": train.origin,
+                    "destination": train.destination,
+                    "priority": train.priority,
+                    "capacity": train.capacity,
+                    "active": train.active
+                } if train else None
+            }
+            result_schedules.append(schedule_dict)
+
+        return result_schedules
 
     except Exception as e:
         logger.error(f"Failed to fetch current schedule: {str(e)}")
@@ -361,7 +334,7 @@ async def get_current_schedule(db: Session = Depends(get_db)):
         )
 
 
-@router.post("/override", response_model=Override)
+@router.post("/override")
 async def override_decision(
     request: OverrideRequest,
     db: Session = Depends(get_db)
