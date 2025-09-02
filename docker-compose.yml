@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://train_user:train_pass@db:5432/train_control
+      - DATABASE_URL=postgresql://postgres:Amandeep27@localhost:5432/train_control
     depends_on:
       db:
         condition: service_healthy
@@ -18,8 +18,8 @@ services:
     image: postgres:15
     environment:
       - POSTGRES_DB=train_control
-      - POSTGRES_USER=train_user
-      - POSTGRES_PASSWORD=train_pass
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=Amandeep27
     ports:
       - "5432:5432"
     volumes:

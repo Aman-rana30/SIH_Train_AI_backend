@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict
 
 from app.core.dependencies import get_db
 from app.schemas.train import OptimizationRequest, WhatIfRequest
+# Import the broadcast function from the websocket routes
+from app.api.routes.websocket import broadcast_optimization_complete
+
 # Temporarily commented out to fix circular import issues
 # from app.schemas.schedule import OptimizationResult, Schedule, ScheduleCreate
 # from app.schemas.override import OverrideRequest, Override
@@ -52,7 +55,7 @@ class Schedule(BaseModel):
 class OptimizationResult(BaseModel):
     """Temporary schema for optimization results."""
     optimization_run_id: str
-    schedules: List[Schedule]  # Changed from List[Dict[str, Any]] to List[Schedule]
+    schedules: List[Schedule]
     metrics: Dict[str, Any]
     computation_time: float
     status: str
@@ -187,19 +190,25 @@ async def optimize_schedule(
             )
 
             db.add(db_schedule)
+            db.flush() # Use flush to get the ID before commit
             saved_schedules.append(Schedule.model_validate(db_schedule))
 
         db.commit()
 
         logger.info(f"Optimization completed in {result.computation_time:.2f}s with status {result.status}")
 
-        return OptimizationResult(
+        final_result = OptimizationResult(
             optimization_run_id=optimization_run_id,
             schedules=saved_schedules,
             metrics=result.metrics,
             computation_time=result.computation_time,
             status=result.status
         )
+
+        # Broadcast the result to all connected WebSocket clients
+        await broadcast_optimization_complete(final_result.model_dump(mode='json'))
+
+        return final_result
 
     except Exception as e:
         logger.error(f"Optimization failed: {str(e)}")

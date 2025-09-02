@@ -13,11 +13,11 @@ if TYPE_CHECKING:
 
 class ScheduleStatus(str, Enum):
     """Schedule status enumeration."""
-    WAITING = "waiting"
-    MOVING = "moving"
-    DELAYED = "delayed"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    WAITING = "WAITING"
+    MOVING = "MOVING"
+    DELAYED = "DELAYED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
 
 
 class ScheduleBase(BaseModel):

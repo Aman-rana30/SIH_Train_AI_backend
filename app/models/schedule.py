@@ -11,11 +11,11 @@ from app.db.base import Base
 
 class ScheduleStatus(enum.Enum):
     """Enumeration for schedule status."""
-    WAITING = "waiting"
-    MOVING = "moving"
-    DELAYED = "delayed"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    WAITING = "WAITING"
+    MOVING = "MOVING"
+    DELAYED = "DELAYED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
 
 
 class Schedule(Base):
