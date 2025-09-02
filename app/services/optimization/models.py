@@ -3,7 +3,7 @@ Data models for optimization operations.
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 
 
 @dataclass
@@ -11,13 +11,20 @@ class TrainData:
     """Data structure for train information used in optimization."""
     train_id: str
     type: str
-    arrival_time: datetime
-    departure_time: datetime
+    arrival_time: Union[datetime, str]
+    departure_time: Union[datetime, str]
     section_id: str
     platform_need: str
     priority: int
     origin: Optional[str] = None
     destination: Optional[str] = None
+
+    def __post_init__(self):
+        """Convert string timestamps to datetime objects if needed."""
+        if isinstance(self.arrival_time, str):
+            self.arrival_time = datetime.fromisoformat(self.arrival_time.replace('Z', '+00:00'))
+        if isinstance(self.departure_time, str):
+            self.departure_time = datetime.fromisoformat(self.departure_time.replace('Z', '+00:00'))
 
 
 @dataclass

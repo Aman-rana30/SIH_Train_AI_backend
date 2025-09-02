@@ -8,10 +8,10 @@ from fastapi.responses import JSONResponse
 import logging
 import time
 from contextlib import asynccontextmanager
+import os
 
 from app.core.config import settings
-# Temporarily commented out to fix circular import issues
-# from app.api.routes import schedule, metrics, websocket
+from app.api.routes import schedule, metrics, websocket
 from app.db.session import engine
 from app.db.base import Base
 
@@ -28,12 +28,15 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting train traffic control system...")
 
-    # Create database tables
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-    except Exception as e:
-        logger.error(f"Failed to create database tables: {str(e)}")
+    # Only create database tables if not in test mode
+    if not os.getenv("TESTING"):
+        try:
+            Base.metadata.create_all(bind=engine)
+            logger.info("Database tables created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create database tables: {str(e)}")
+    else:
+        logger.info("Skipping database table creation in test mode")
 
     yield
 
@@ -89,24 +92,24 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Include API routes - temporarily commented out to fix circular import issues
-# app.include_router(
-#     schedule.router,
-#     prefix=f"{settings.api_v1_prefix}/schedule",
-#     tags=["schedule"]
-# )
+# Include API routes
+app.include_router(
+    schedule.router,
+    prefix=f"{settings.api_v1_prefix}/schedule",
+    tags=["schedule"]
+)
 
-# app.include_router(
-#     metrics.router,
-#     prefix=f"{settings.api_v1_prefix}/metrics",
-#     tags=["metrics"]
-# )
+app.include_router(
+    metrics.router,
+    prefix=f"{settings.api_v1_prefix}/metrics",
+    tags=["metrics"]
+)
 
-# app.include_router(
-#     websocket.router,
-#     prefix="/ws",
-#     tags=["websocket"]
-# )
+app.include_router(
+    websocket.router,
+    prefix="/ws",
+    tags=["websocket"]
+)
 
 
 # Health check endpoints

@@ -1,14 +1,14 @@
 """
 Pydantic schemas for metrics-related API operations.
 """
-from pydantic import BaseModel, Field
-from datetime import date, datetime
-from typing import Optional
+from pydantic import BaseModel, Field, ConfigDict
+from datetime import datetime
+from typing import Optional, Dict, List, Any
 
 
 class MetricsBase(BaseModel):
     """Base metrics schema."""
-    date: date = Field(..., description="Date for metrics")
+    date: datetime = Field(..., description="Date for metrics")
     average_delay: float = Field(default=0.0, ge=0, description="Average delay in minutes")
     throughput: int = Field(default=0, ge=0, description="Number of trains processed")
     utilization: float = Field(default=0.0, ge=0, le=100, description="Utilization percentage")
@@ -31,21 +31,20 @@ class Metrics(MetricsBase):
     created_at: datetime
     ai_vs_override_ratio: float = Field(..., description="Percentage of AI vs override decisions")
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class KPIResponse(BaseModel):
     """Schema for KPI dashboard response."""
     current_metrics: Metrics
-    trends: dict = Field(..., description="Historical trends")
-    alerts: list[str] = Field(default_factory=list, description="System alerts")
-    recommendations: list[str] = Field(default_factory=list, description="Optimization recommendations")
+    trends: Dict[str, Any] = Field(..., description="Historical trends")
+    alerts: List[str] = Field(default_factory=list, description="System alerts")
+    recommendations: List[str] = Field(default_factory=list, description="Optimization recommendations")
 
 
 class MetricsFilter(BaseModel):
     """Schema for filtering metrics queries."""
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
     min_throughput: Optional[int] = None
     max_delay: Optional[float] = None

@@ -1,12 +1,12 @@
 """
-Schedule database model.
+Schedule database model for train scheduling.
 """
-from sqlalchemy import Column, Integer, String, DateTime, Enum, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, ForeignKey
 from sqlalchemy.orm import relationship
 import enum
+from datetime import datetime
 
-Base = declarative_base()
+from app.db.base import Base
 
 
 class ScheduleStatus(enum.Enum):
@@ -37,7 +37,7 @@ class Schedule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     schedule_id = Column(String(50), unique=True, index=True, nullable=False)
-    train_id = Column(Integer, ForeignKey("trains.id"), nullable=False)
+    train_id = Column(Integer, nullable=False)  # Temporarily removed foreign key for testing
     planned_time = Column(DateTime, nullable=False)
     optimized_time = Column(DateTime, nullable=False)
     status = Column(Enum(ScheduleStatus), nullable=False, default=ScheduleStatus.WAITING)
@@ -48,8 +48,8 @@ class Schedule(Base):
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime)
 
-    # Relationships
-    train = relationship("Train", back_populates="schedules")
+    # Relationships - temporarily commented out to fix circular import issues
+    # train = relationship("Train", back_populates="schedules")
 
     def __repr__(self) -> str:
         return f"<Schedule(schedule_id={self.schedule_id}, train_id={self.train_id}, status={self.status})>"

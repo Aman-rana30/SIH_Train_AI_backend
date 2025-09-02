@@ -5,11 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from typing import List, Optional
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 import logging
 
 from app.core.dependencies import get_db
-from app.schemas.metrics import Metrics, KPIResponse, MetricsFilter
+from app.schemas.metrics import Metrics as MetricsSchema, KPIResponse, MetricsFilter
 from app.models.metrics import Metrics as MetricsModel
 from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
 from app.models.override import Override as OverrideModel
@@ -20,36 +20,45 @@ logger = logging.getLogger(__name__)
 
 @router.get("/", response_model=KPIResponse)
 async def get_metrics(
-    target_date: Optional[date] = Query(None, description="Date for metrics (default: today)"),
+    target_date: Optional[str] = Query(None, description="Date for metrics in YYYY-MM-DD format (default: today)"),
     db: Session = Depends(get_db)
 ):
     """
     Get system performance metrics and KPIs.
 
     Args:
-        target_date: Date to get metrics for (defaults to today)
+        target_date: Date for metrics in YYYY-MM-DD format (defaults to today)
         db: Database session
 
     Returns:
         KPI response with current metrics, trends, and alerts
     """
     if not target_date:
-        target_date = date.today()
+        target_date_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        try:
+            # Parse the date string to datetime
+            target_date_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid date format. Use YYYY-MM-DD format."
+            )
 
-    logger.info(f"Fetching metrics for {target_date}")
+    logger.info(f"Fetching metrics for {target_date_dt}")
 
     try:
         # Get or create today's metrics
         current_metrics = db.query(MetricsModel).filter(
-            MetricsModel.date == target_date
+            MetricsModel.date == target_date_dt
         ).first()
 
         if not current_metrics:
             # Calculate metrics for the day
-            current_metrics = await _calculate_daily_metrics(db, target_date)
+            current_metrics = await _calculate_daily_metrics(db, target_date_dt)
 
         # Get trends (last 7 days)
-        trends = await _calculate_trends(db, target_date)
+        trends = await _calculate_trends(db, target_date_dt)
 
         # Generate alerts
         alerts = _generate_alerts(current_metrics, trends)
@@ -58,7 +67,7 @@ async def get_metrics(
         recommendations = _generate_recommendations(current_metrics, trends)
 
         return KPIResponse(
-            current_metrics=Metrics.from_orm(current_metrics),
+            current_metrics=MetricsSchema.from_orm(current_metrics),
             trends=trends,
             alerts=alerts,
             recommendations=recommendations
@@ -72,10 +81,10 @@ async def get_metrics(
         )
 
 
-@router.get("/history", response_model=List[Metrics])
+@router.get("/history", response_model=List[MetricsSchema])
 async def get_metrics_history(
-    start_date: Optional[date] = Query(None, description="Start date"),
-    end_date: Optional[date] = Query(None, description="End date"),
+    start_date: Optional[datetime] = Query(None, description="Start date"),
+    end_date: Optional[datetime] = Query(None, description="End date"),
     limit: int = Query(30, ge=1, le=365, description="Number of days to return"),
     db: Session = Depends(get_db)
 ):
@@ -101,13 +110,13 @@ async def get_metrics_history(
 
         metrics = query.order_by(MetricsModel.date.desc()).limit(limit).all()
 
-        return [Metrics.from_orm(metric) for metric in metrics]
+        return [MetricsSchema.from_orm(metric) for metric in metrics]
 
     except Exception as e:
         logger.error(f"Failed to fetch metrics history: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch metrics history: {str(e)}"
+            detail="Failed to fetch metrics history"
         )
 
 
@@ -127,7 +136,7 @@ async def get_metrics_summary(
         Aggregated metrics summary
     """
     try:
-        end_date = date.today()
+        end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         start_date = end_date - timedelta(days=days-1)
 
         # Get metrics for the period
@@ -182,9 +191,9 @@ async def get_metrics_summary(
         )
 
 
-async def _calculate_daily_metrics(db: Session, target_date: date) -> MetricsModel:
+async def _calculate_daily_metrics(db: Session, target_date: datetime) -> MetricsModel:
     """Calculate metrics for a specific date."""
-    start_datetime = datetime.combine(target_date, datetime.min.time())
+    start_datetime = datetime.combine(target_date.date(), datetime.min.time())
     end_datetime = start_datetime + timedelta(days=1)
 
     # Get schedules for the day
@@ -235,7 +244,7 @@ async def _calculate_daily_metrics(db: Session, target_date: date) -> MetricsMod
     return metrics
 
 
-async def _calculate_trends(db: Session, target_date: date) -> dict:
+async def _calculate_trends(db: Session, target_date: datetime) -> dict:
     """Calculate trends for the last 7 days."""
     end_date = target_date
     start_date = end_date - timedelta(days=6)

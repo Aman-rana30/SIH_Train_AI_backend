@@ -2,11 +2,10 @@
 Train database model.
 """
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Boolean
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 import enum
 
-Base = declarative_base()
+from app.db.base import Base
 
 
 class TrainType(enum.Enum):
@@ -49,9 +48,9 @@ class Train(Base):
     destination = Column(String(100))
     capacity = Column(Integer)
 
-    # Relationships
-    schedules = relationship("Schedule", back_populates="train")
-    overrides = relationship("Override", back_populates="train")
+    # Relationships - temporarily commented out to fix circular import issues
+    # schedules = relationship("Schedule", back_populates="train")
+    # overrides = relationship("Override", back_populates="train")
 
     def __repr__(self) -> str:
         return f"<Train(train_id={self.train_id}, type={self.type}, priority={self.priority})>"

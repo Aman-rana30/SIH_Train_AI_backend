@@ -1,10 +1,10 @@
 """
-Metrics database model for system performance tracking.
+Metrics database model for performance tracking.
 """
-from sqlalchemy import Column, Integer, Float, Date, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, Float, Text
+from datetime import datetime
 
-Base = declarative_base()
+from app.db.base import Base
 
 
 class Metrics(Base):
@@ -27,7 +27,7 @@ class Metrics(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     metric_id = Column(Integer, unique=True, index=True, nullable=False)
-    date = Column(Date, nullable=False, index=True)
+    date = Column(DateTime, nullable=False, index=True)
     average_delay = Column(Float, default=0.0)
     throughput = Column(Integer, default=0)
     utilization = Column(Float, default=0.0)

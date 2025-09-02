@@ -2,9 +2,9 @@
 Pydantic schemas for train-related API operations.
 """
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any, Union
 from enum import Enum
 
 from typing import TYPE_CHECKING
@@ -24,14 +24,26 @@ class TrainBase(BaseModel):
     """Base train schema with common fields."""
     train_id: str = Field(..., description="Unique train identifier")
     type: TrainType = Field(..., description="Train type")
-    arrival_time: datetime = Field(..., description="Scheduled arrival time")
-    departure_time: datetime = Field(..., description="Scheduled departure time")
+    arrival_time: Union[datetime, str] = Field(..., description="Scheduled arrival time")
+    departure_time: Union[datetime, str] = Field(..., description="Scheduled departure time")
     section_id: str = Field(..., description="Railway section identifier")
     platform_need: str = Field(..., description="Required platform")
     priority: int = Field(default=1, ge=1, le=10, description="Train priority (1-10)")
     origin: Optional[str] = Field(None, description="Origin station")
     destination: Optional[str] = Field(None, description="Destination station")
     capacity: Optional[int] = Field(None, ge=0, description="Train capacity")
+
+    @field_validator('arrival_time', 'departure_time', mode='before')
+    @classmethod
+    def parse_datetime(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError('Invalid datetime format. Use ISO format (YYYY-MM-DDTHH:MM:SS)')
+        return v
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TrainCreate(TrainBase):
@@ -42,8 +54,8 @@ class TrainCreate(TrainBase):
 class TrainUpdate(BaseModel):
     """Schema for updating train information."""
     type: Optional[TrainType] = None
-    arrival_time: Optional[datetime] = None
-    departure_time: Optional[datetime] = None
+    arrival_time: Optional[Union[datetime, str]] = None
+    departure_time: Optional[Union[datetime, str]] = None
     section_id: Optional[str] = None
     platform_need: Optional[str] = None
     priority: Optional[int] = Field(None, ge=1, le=10)
@@ -51,6 +63,18 @@ class TrainUpdate(BaseModel):
     destination: Optional[str] = None
     capacity: Optional[int] = Field(None, ge=0)
     active: Optional[bool] = None
+
+    @field_validator('arrival_time', 'departure_time', mode='before')
+    @classmethod
+    def parse_datetime(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError('Invalid datetime format. Use ISO format (YYYY-MM-DDTHH:MM:SS)')
+        return v
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Train(TrainBase):
@@ -61,8 +85,7 @@ class Train(TrainBase):
     # schedules: List["Schedule"] = Field(default_factory=list)
     # overrides: List["Override"] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OptimizationRequest(BaseModel):
@@ -73,6 +96,8 @@ class OptimizationRequest(BaseModel):
         description="Additional optimization parameters"
     )
 
+    model_config = ConfigDict(from_attributes=True)
+
 
 class WhatIfRequest(BaseModel):
     """Schema for what-if analysis requests."""
@@ -81,5 +106,7 @@ class WhatIfRequest(BaseModel):
         None,
         description="List of affected train IDs"
     )
+
+    model_config = ConfigDict(from_attributes=True)
 
 

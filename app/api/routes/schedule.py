@@ -3,10 +3,11 @@ API routes for train schedule management and optimization.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
+from pydantic import BaseModel, ConfigDict
 
 from app.core.dependencies import get_db
 from app.schemas.train import OptimizationRequest, WhatIfRequest
@@ -15,16 +16,7 @@ from app.schemas.train import OptimizationRequest, WhatIfRequest
 # from app.schemas.override import OverrideRequest, Override
 
 # Temporary schemas to avoid circular imports
-from pydantic import BaseModel
-from typing import List, Dict, Any
-
-class OptimizationResult(BaseModel):
-    """Temporary schema for optimization results."""
-    optimization_run_id: str
-    schedules: List[Dict[str, Any]]
-    metrics: Dict[str, Any]
-    computation_time: float
-    status: str
+from typing import List, Dict, Any, Optional
 
 class ScheduleCreate(BaseModel):
     """Temporary schema for schedule creation."""
@@ -37,18 +29,12 @@ class ScheduleCreate(BaseModel):
     status: str = "waiting"
     delay_minutes: int = 0
     optimization_run_id: str = None
-
-class OverrideRequest(BaseModel):
-    """Temporary schema for override requests."""
-    train_id: int
-    decision: str
-    reason: str = None
-    new_schedule_time: datetime = None
-    controller_id: str
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class Schedule(BaseModel):
     """Temporary schema for schedule responses."""
-    id: int
+    id: Optional[int] = None
     schedule_id: str
     train_id: int
     planned_time: datetime
@@ -59,7 +45,29 @@ class Schedule(BaseModel):
     delay_minutes: int
     optimization_run_id: str = None
     created_at: datetime
-    updated_at: datetime = None
+    updated_at: Optional[datetime] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class OptimizationResult(BaseModel):
+    """Temporary schema for optimization results."""
+    optimization_run_id: str
+    schedules: List[Schedule]  # Changed from List[Dict[str, Any]] to List[Schedule]
+    metrics: Dict[str, Any]
+    computation_time: float
+    status: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class OverrideRequest(BaseModel):
+    """Temporary schema for override requests."""
+    train_id: int
+    decision: str
+    reason: str = None
+    new_schedule_time: datetime = None
+    controller_id: str
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class Override(BaseModel):
     """Temporary schema for override responses."""
@@ -72,6 +80,8 @@ class Override(BaseModel):
     controller_id: str = None
     impact_delay: int
     timestamp: datetime
+    
+    model_config = ConfigDict(from_attributes=True)
 from app.models.train import Train as TrainModel
 from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
 from app.models.override import Override as OverrideModel
@@ -100,6 +110,13 @@ async def optimize_schedule(
         Optimized schedules with metrics
     """
     logger.info(f"Received optimization request for {len(request.trains)} trains")
+
+    # Validate request
+    if not request.trains:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Trains list cannot be empty"
+        )
 
     try:
         # Convert request to optimization input
@@ -166,11 +183,11 @@ async def optimize_schedule(
                 delay_minutes=schedule_create.delay_minutes,
                 optimization_run_id=schedule_create.optimization_run_id,
                 status=schedule_create.status,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
 
             db.add(db_schedule)
-            saved_schedules.append(Schedule.from_orm(db_schedule))
+            saved_schedules.append(Schedule.model_validate(db_schedule))
 
         db.commit()
 
@@ -239,7 +256,7 @@ async def whatif_analysis(
             event_type=request.disruption.get('type', 'delay'),
             affected_trains=request.affected_trains or [],
             delay_minutes=request.disruption.get('delay_minutes', 0),
-            start_time=datetime.utcnow(),
+            start_time=datetime.now(timezone.utc),
             duration_minutes=request.disruption.get('duration_minutes', 60),
             description=request.disruption.get('description', 'Unknown disruption')
         )
@@ -265,7 +282,7 @@ async def whatif_analysis(
                 delay_minutes=schedule_data['delay_minutes'],
                 optimization_run_id=whatif_run_id,
                 status=ScheduleStatus.WAITING,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             saved_schedules.append(schedule)
 
@@ -358,7 +375,7 @@ async def override_decision(
             controller_decision=request.decision,
             ai_recommendation=ai_recommendation,
             reason=request.reason,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             controller_id=request.controller_id,
             impact_delay=0  # Could calculate this based on new_schedule_time
         )
@@ -368,7 +385,7 @@ async def override_decision(
         # Update schedule if new time provided
         if request.new_schedule_time and current_schedule:
             current_schedule.optimized_time = request.new_schedule_time
-            current_schedule.updated_at = datetime.utcnow()
+            current_schedule.updated_at = datetime.now(timezone.utc)
             current_schedule.status = ScheduleStatus.MOVING
 
         db.commit()

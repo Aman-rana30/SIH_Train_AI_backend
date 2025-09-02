@@ -2,6 +2,7 @@
 Core configuration settings for the train traffic control system.
 """
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 
 
@@ -30,10 +31,11 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore"
+    )
 
     def __post_init__(self):
         if not self.database_url_async:
