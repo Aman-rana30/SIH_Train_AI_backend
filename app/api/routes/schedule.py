@@ -14,10 +14,6 @@ from app.schemas.train import OptimizationRequest, WhatIfRequest
 # Import the broadcast function from the websocket routes
 from app.api.routes.websocket import broadcast_optimization_complete
 
-# Temporarily commented out to fix circular import issues
-# from app.schemas.schedule import OptimizationResult, Schedule, ScheduleCreate
-# from app.schemas.override import OverrideRequest, Override
-
 # Temporary schemas to avoid circular imports
 from typing import List, Dict, Any, Optional
 
@@ -85,7 +81,9 @@ class Override(BaseModel):
     timestamp: datetime
     
     model_config = ConfigDict(from_attributes=True)
-from app.models.train import Train as TrainModel
+
+# Import the SQLAlchemy model and Enum
+from app.models.train import Train as TrainModel, TrainType as TrainTypeModel
 from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
 from app.models.override import Override as OverrideModel
 from app.services.optimization.optimizer import TrainSchedulingOptimizer
@@ -125,6 +123,20 @@ async def optimize_schedule(
         # Convert request to optimization input
         train_data = []
         for train_req in request.trains:
+            # --- START FIX: Ensure train exists in DB or create it ---
+            train_in_db = db.query(TrainModel).filter(TrainModel.train_id == train_req.train_id).first()
+            if not train_in_db:
+                # Convert pydantic model to dict for DB creation
+                train_data_for_db = train_req.model_dump()
+                # Correctly convert the Pydantic Enum to the SQLAlchemy Enum
+                train_data_for_db['type'] = TrainTypeModel[train_req.type.name]
+                
+                train_in_db = TrainModel(**train_data_for_db)
+                db.add(train_in_db)
+                db.commit()
+                db.refresh(train_in_db)
+            # --- END FIX ---
+            
             train_data.append(TrainData(
                 train_id=train_req.train_id,
                 type=train_req.type.value,
@@ -163,9 +175,15 @@ async def optimize_schedule(
         # Save schedules to database
         saved_schedules = []
         for schedule_data in result.schedules:
+            # --- START FIX: Look up the train to get its database ID ---
+            train = db.query(TrainModel).filter(TrainModel.train_id == schedule_data['train_id']).first()
+            if not train:
+                logger.warning(f"Could not find train {schedule_data['train_id']} in the database to save schedule.")
+                continue
+            
             schedule_create = ScheduleCreate(
                 schedule_id=f"{optimization_run_id}_{schedule_data['train_id']}",
-                train_id=1,  # Simplified - would need proper train lookup
+                train_id=train.id, # Use the actual database ID
                 planned_time=schedule_data['original_arrival'],
                 optimized_time=schedule_data['optimized_arrival'],
                 section_id=schedule_data['section_id'],
@@ -174,6 +192,7 @@ async def optimize_schedule(
                 optimization_run_id=optimization_run_id,
                 status=ScheduleStatus.WAITING
             )
+            # --- END FIX ---
 
             # Create database record
             db_schedule = ScheduleModel(
@@ -332,7 +351,7 @@ async def get_current_schedule(db: Session = Depends(get_db)):
             ])
         ).order_by(ScheduleModel.optimized_time).all()
 
-        return [Schedule.from_orm(schedule) for schedule in schedules]
+        return [Schedule.model_validate(schedule) for schedule in schedules]
 
     except Exception as e:
         logger.error(f"Failed to fetch current schedule: {str(e)}")
@@ -400,7 +419,7 @@ async def override_decision(
         db.commit()
 
         logger.info(f"Override created for train {request.train_id}")
-        return Override.from_orm(override_record)
+        return Override.model_validate(override_record)
 
     except HTTPException:
         raise
@@ -411,3 +430,4 @@ async def override_decision(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create override: {str(e)}"
         )
+
