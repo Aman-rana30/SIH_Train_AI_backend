@@ -310,7 +310,8 @@ async def get_current_schedule(db: Session = Depends(get_db)):
                     "capacity": train.capacity,
                     "active": train.active,
                     "arrival_time": train.arrival_time.isoformat() if hasattr(train, 'arrival_time') and train.arrival_time else None,
-                    "departure_time": train.departure_time.isoformat() if hasattr(train, 'departure_time') and train.departure_time else None
+                    "departure_time": train.departure_time.isoformat() if hasattr(train, 'departure_time') and train.departure_time else None,
+                    "platform_need": train.platform_need
                 }
             schedule_dict = {
                 "id": schedule.id,

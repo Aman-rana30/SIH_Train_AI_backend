@@ -54,12 +54,19 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## API Endpoints
 
-- `POST /api/schedule/optimize` - Optimize train schedules
-- `POST /api/schedule/whatif` - What-if analysis for disruptions
-- `GET /api/schedule/current` - Get current optimized schedule
-- `POST /api/schedule/override` - Manual controller override
-- `GET /api/metrics` - System performance metrics
-- `WS /ws/updates` - Real-time schedule updates
+### Schedule Management
+- `POST /api/schedule/optimize`: Run the optimization engine for a given list of trains.
+- `POST /api/schedule/whatif`: Perform what-if analysis for disruption scenarios.
+- `GET /api/schedule/current`: Retrieve the current, active, and optimized train schedule.
+- `POST /api/schedule/override`: Allow a controller to manually override an AI-generated schedule.
+
+### Metrics & KPIs
+- `GET /api/metrics/`: Get a snapshot of current system performance metrics, alerts, and recommendations.
+- `GET /api/metrics/history`: Retrieve historical metrics data.
+- `GET /api/metrics/summary`: Get an aggregated summary of metrics over a specified period.
+
+### Real-time Updates
+- `WS /ws/updates`: WebSocket endpoint for broadcasting real-time schedule changes and train movements.
 
 ## Testing
 
