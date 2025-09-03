@@ -1,9 +1,9 @@
 """
 WebSocket routes for real-time schedule updates.
 """
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 import asyncio
 import logging
@@ -21,6 +21,7 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        # Stores metadata per connection (e.g., section_id)
         self.connection_info: Dict[WebSocket, Dict[str, Any]] = {}
 
     async def connect(self, websocket: WebSocket, client_info: Dict[str, Any] = None):
@@ -28,14 +29,20 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.append(websocket)
         self.connection_info[websocket] = client_info or {}
-        logger.info(f"WebSocket connection established. Total connections: {len(self.active_connections)}")
+        logger.info(
+            f"WebSocket connection established. "
+            f"Section={client_info.get('section_id') if client_info else None}, "
+            f"Total connections: {len(self.active_connections)}"
+        )
 
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection."""
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
             self.connection_info.pop(websocket, None)
-            logger.info(f"WebSocket connection closed. Total connections: {len(self.active_connections)}")
+            logger.info(
+                f"WebSocket connection closed. Total connections: {len(self.active_connections)}"
+            )
 
     async def send_personal_message(self, message: Dict[str, Any], websocket: WebSocket):
         """Send a message to a specific client."""
@@ -46,7 +53,7 @@ class ConnectionManager:
             self.disconnect(websocket)
 
     async def broadcast(self, message: Dict[str, Any]):
-        """Broadcast a message to all connected clients."""
+        """Broadcast a message to all connected clients (no filtering)."""
         if not self.active_connections:
             return
 
@@ -62,26 +69,91 @@ class ConnectionManager:
         for connection in disconnected:
             self.disconnect(connection)
 
+    async def broadcast_section_filtered(self, message: Dict[str, Any]):
+        """Broadcast only relevant section-specific data to each client."""
+        if not self.active_connections:
+            return
+
+        disconnected = []
+        for connection in self.active_connections:
+            section_id = self.connection_info.get(connection, {}).get("section_id")
+            if section_id is None:
+                # Skip clients without a section subscription for section-specific data
+                continue
+
+            # Filter the message data for this section
+            filtered_data = self._filter_for_section(message.get("data", {}), section_id)
+            if filtered_data is None:
+                continue  # nothing relevant for this section
+
+            personal_msg = {
+                **message,
+                "data": filtered_data,
+            }
+
+            try:
+                await connection.send_text(json.dumps(personal_msg, default=str))
+            except Exception as e:
+                logger.error(f"Failed to broadcast filtered data: {str(e)}")
+                disconnected.append(connection)
+
+        for connection in disconnected:
+            self.disconnect(connection)
+
+    def _filter_for_section(self, data: Dict[str, Any], section_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Extracts only the portion of data relevant to a given section.
+        Handles optimization results of the form:
+        {
+            "schedules": [...],
+            "metrics": {...}
+        }
+        """
+        if not data:
+            return None
+
+        # Case 1: optimization result with schedules + metrics
+        if isinstance(data, dict) and "schedules" in data:
+            schedules = data.get("schedules", [])
+            filtered_schedules = [s for s in schedules if s.get("section_id") == section_id]
+            if not filtered_schedules:
+                return None
+            return {
+                "schedules": filtered_schedules,
+                "metrics": data.get("metrics", {})
+            }
+
+        # Case 2: single schedule dict
+        if isinstance(data, dict) and "section_id" in data:
+            return data if data["section_id"] == section_id else None
+
+        # Case 3: list of schedules
+        if isinstance(data, list):
+            filtered = [item for item in data if item.get("section_id") == section_id]
+            return filtered if filtered else None
+
+        return None
+
     async def send_schedule_update(self, schedule_data: Dict[str, Any]):
-        """Send schedule update to all connected clients."""
+        """Send section-filtered schedule update."""
         message = {
             "type": "schedule_update",
             "timestamp": datetime.utcnow().isoformat(),
             "data": schedule_data
         }
-        await self.broadcast(message)
+        await self.broadcast_section_filtered(message)
 
     async def send_optimization_complete(self, optimization_result: Dict[str, Any]):
-        """Send optimization completion notification."""
+        """Send section-filtered optimization completion notification."""
         message = {
             "type": "optimization_complete",
             "timestamp": datetime.utcnow().isoformat(),
             "data": optimization_result
         }
-        await self.broadcast(message)
+        await self.broadcast_section_filtered(message)
 
     async def send_alert(self, alert_data: Dict[str, Any]):
-        """Send alert notification to connected clients."""
+        """Send alert notification to ALL clients (not section-specific)."""
         message = {
             "type": "alert",
             "timestamp": datetime.utcnow().isoformat(),
@@ -108,23 +180,25 @@ manager = ConnectionManager()
 
 
 @router.websocket("/updates")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, section_id: Optional[str] = Query(None)):
     """
     WebSocket endpoint for real-time schedule updates.
 
-    Clients can connect to receive:
-    - Schedule updates
-    - Optimization completion notifications  
-    - System alerts
-    - Performance metrics
+    Clients must connect with ?section_id=XYZ if they want section-filtered updates.
+
+    Clients can receive:
+    - Schedule updates (filtered by section)
+    - Optimization completion notifications (filtered by section)
+    - System alerts (to all clients)
+    - Heartbeats / metrics
     """
-    await manager.connect(websocket)
+    await manager.connect(websocket, client_info={"section_id": section_id})
 
     try:
         # Send initial connection confirmation
         await manager.send_personal_message({
             "type": "connection_established",
-            "message": "Connected to train traffic control system",
+            "message": f"Connected to train traffic control system (section={section_id})",
             "timestamp": datetime.utcnow().isoformat()
         }, websocket)
 
@@ -144,7 +218,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Error handling client message: {str(e)}")
                 await manager.send_personal_message({
-                    "type": "error", 
+                    "type": "error",
                     "message": "Error processing message",
                     "timestamp": datetime.utcnow().isoformat()
                 }, websocket)
@@ -159,16 +233,11 @@ async def websocket_endpoint(websocket: WebSocket):
 async def handle_client_message(websocket: WebSocket, message: Dict[str, Any]):
     """
     Handle incoming messages from WebSocket clients.
-
-    Args:
-        websocket: Client WebSocket connection
-        message: Parsed JSON message from client
     """
     message_type = message.get("type", "unknown")
     logger.debug(f"Received WebSocket message: {message_type}")
 
     if message_type == "subscribe_schedules":
-        # Client wants to subscribe to schedule updates
         await manager.send_personal_message({
             "type": "subscription_confirmed",
             "subscription": "schedules",
@@ -177,17 +246,14 @@ async def handle_client_message(websocket: WebSocket, message: Dict[str, Any]):
         }, websocket)
 
     elif message_type == "subscribe_metrics":
-        # Client wants to subscribe to metrics updates
         await manager.send_personal_message({
-            "type": "subscription_confirmed", 
+            "type": "subscription_confirmed",
             "subscription": "metrics",
             "message": "Subscribed to metrics updates",
             "timestamp": datetime.utcnow().isoformat()
         }, websocket)
 
     elif message_type == "request_current_schedule":
-        # Client requesting current schedule
-        # This would typically fetch from database
         await manager.send_personal_message({
             "type": "current_schedule",
             "data": {"message": "Schedule data would be here"},
@@ -195,7 +261,6 @@ async def handle_client_message(websocket: WebSocket, message: Dict[str, Any]):
         }, websocket)
 
     elif message_type == "ping":
-        # Client ping for connection health check
         await manager.send_personal_message({
             "type": "pong",
             "timestamp": datetime.utcnow().isoformat()
@@ -211,54 +276,24 @@ async def handle_client_message(websocket: WebSocket, message: Dict[str, Any]):
 
 @router.get("/connections")
 async def get_connection_stats():
-    """
-    Get statistics about current WebSocket connections.
-
-    Returns:
-        Connection statistics
-    """
+    """Get statistics about current WebSocket connections."""
     return manager.get_connection_stats()
 
 
 # Utility functions for sending updates (to be called from other parts of the application)
-
 async def broadcast_schedule_update(schedule_data: Dict[str, Any]):
-    """
-    Broadcast schedule update to all connected clients.
-
-    Args:
-        schedule_data: Updated schedule information
-    """
     await manager.send_schedule_update(schedule_data)
 
 
 async def broadcast_optimization_complete(optimization_result: Dict[str, Any]):
-    """
-    Broadcast optimization completion to all connected clients.
-
-    Args:
-        optimization_result: Results of optimization run
-    """
     await manager.send_optimization_complete(optimization_result)
 
 
 async def broadcast_alert(alert_data: Dict[str, Any]):
-    """
-    Broadcast alert to all connected clients.
-
-    Args:
-        alert_data: Alert information
-    """
     await manager.send_alert(alert_data)
 
 
 async def broadcast_metrics_update(metrics_data: Dict[str, Any]):
-    """
-    Broadcast metrics update to all connected clients.
-
-    Args:
-        metrics_data: Updated metrics information
-    """
     message = {
         "type": "metrics_update",
         "timestamp": datetime.utcnow().isoformat(),
@@ -269,23 +304,15 @@ async def broadcast_metrics_update(metrics_data: Dict[str, Any]):
 
 # Background task for periodic updates (example)
 async def periodic_updates():
-    """
-    Background task that sends periodic updates to connected clients.
-    This would typically be started as a background task in the main application.
-    """
     while True:
         try:
-            # Send periodic heartbeat
             if manager.active_connections:
                 await manager.broadcast({
                     "type": "heartbeat",
                     "timestamp": datetime.utcnow().isoformat(),
                     "active_connections": len(manager.active_connections)
                 })
-
-            # Wait 30 seconds before next heartbeat
             await asyncio.sleep(30)
-
         except Exception as e:
             logger.error(f"Error in periodic updates: {str(e)}")
             await asyncio.sleep(30)

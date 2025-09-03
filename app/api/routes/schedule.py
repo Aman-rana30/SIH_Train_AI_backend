@@ -1,7 +1,7 @@
 """
 API routes for train schedule management and optimization.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
@@ -193,10 +193,13 @@ async def whatif_analysis(
     logger.info("Received what-if analysis request")
 
     try:
-        # Get current schedule from database
-        current_schedules = db.query(ScheduleModel).filter(
-            ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING])
-        ).all()
+        # Get current active schedules and join trains to access human-readable train_id
+        current_schedules = (
+            db.query(ScheduleModel, TrainModel)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.id)
+            .filter(ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]))
+            .all()
+        )
 
         if not current_schedules:
             raise HTTPException(
@@ -204,16 +207,17 @@ async def whatif_analysis(
                 detail="No active schedules found"
             )
 
-        # Convert to dict format
+        # Convert to dict format expected by what-if optimizer
+        # IMPORTANT: Use human-readable TrainModel.train_id, not DB numeric ID
         current_schedule_data = []
-        for schedule in current_schedules:
+        for schedule, train in current_schedules:
             current_schedule_data.append({
-                'train_id': str(schedule.train_id),
+                'train_id': train.train_id,  # human-readable like "EXP001"
                 'optimized_arrival': schedule.optimized_time,
                 'optimized_departure': schedule.optimized_time + timedelta(minutes=10),  # Simplified
                 'section_id': schedule.section_id,
-                'platform_need': schedule.platform_id or 'P1',
-                'priority': 5  # Default priority
+                'platform_need': schedule.platform_id or getattr(train, "platform_need", None) or 'P1',
+                'priority': getattr(train, "priority", 5)
             })
 
         # Create disruption event
@@ -233,13 +237,29 @@ async def whatif_analysis(
         # Generate what-if run ID
         whatif_run_id = f"whatif_{str(uuid.uuid4())[:8]}"
 
-        # Save what-if results (marked as temporary)
-        saved_schedules = []
+        # Build transient schedules mapped back to full Train objects
+        saved_schedules: List[Schedule] = []
         for schedule_data in result.schedules:
+            # schedule_data['train_id'] is human-readable; map back to TrainModel
+            train: Optional[TrainModel] = (
+                db.query(TrainModel)
+                .filter(TrainModel.train_id == schedule_data['train_id'])
+                .first()
+            )
+            if not train:
+                logger.warning(
+                    f"What-if: train with train_id={schedule_data['train_id']} not found; skipping schedule."
+                )
+                continue
+
+            # Build Pydantic TrainSchema from ORM
+            train_schema = TrainSchema.model_validate(train)
+
+            # Create a transient Schedule Pydantic object that embeds the full train details
             schedule = Schedule(
-                id=0,  # Temporary ID
-                schedule_id=f"{whatif_run_id}_{schedule_data['train_id']}",
-                train_id=1,
+                id=0,  # Transient (not persisted)
+                schedule_id=f"{whatif_run_id}_{train.train_id}",
+                train_id=train.id,  # DB FK for consistency
                 planned_time=schedule_data['original_arrival'],
                 optimized_time=schedule_data['optimized_arrival'],
                 section_id=schedule_data['section_id'],
@@ -247,7 +267,9 @@ async def whatif_analysis(
                 delay_minutes=schedule_data['delay_minutes'],
                 optimization_run_id=whatif_run_id,
                 status=ScheduleStatus.WAITING,
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
+                # Embed the full Train object so frontend gets human-readable train_id and other fields
+                train=train_schema
             )
             saved_schedules.append(schedule)
 
@@ -271,26 +293,39 @@ async def whatif_analysis(
 
 
 @router.get("/current")
-async def get_current_schedule(db: Session = Depends(get_db)):
+async def get_current_schedule(
+    section_id: Optional[str] = Query(default=None, description="Filter schedules by section_id"),
+    db: Session = Depends(get_db)
+):
     """
     Get the current optimized schedule from database.
 
     Args:
+        section_id: Optional section filter; when provided, only schedules matching this section_id are returned
         db: Database session
 
     Returns:
         List of current active schedules with full train details
     """
     try:
-        # Join with train table to get full train details
-        schedules = db.query(ScheduleModel).join(
-            TrainModel, ScheduleModel.train_id == TrainModel.id
-        ).filter(
-            ScheduleModel.status.in_([
-                ScheduleStatus.WAITING, 
-                ScheduleStatus.MOVING
-            ])
-        ).order_by(ScheduleModel.optimized_time).all()
+        # Base query joining with train to ensure related existence
+        query = (
+            db.query(ScheduleModel)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.id)
+            .filter(
+                ScheduleModel.status.in_([
+                    ScheduleStatus.WAITING,
+                    ScheduleStatus.MOVING
+                ])
+            )
+        )
+
+        # --- START: Section-based filtering ---
+        if section_id is not None and section_id != "":
+            query = query.filter(ScheduleModel.section_id == section_id)
+        # --- END: Section-based filtering ---
+
+        schedules = query.order_by(ScheduleModel.optimized_time).all()
 
         # Create schedule objects with train details
         result_schedules = []
