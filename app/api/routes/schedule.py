@@ -253,6 +253,7 @@ async def whatif_analysis(
 
         logger.info(f"What-if analysis completed: {len(saved_schedules)} schedules analyzed")
 
+        # Return the OptimizationResult object for frontend rendering
         return OptimizationResult(
             optimization_run_id=whatif_run_id,
             schedules=saved_schedules,
@@ -296,8 +297,21 @@ async def get_current_schedule(db: Session = Depends(get_db)):
         for schedule in schedules:
             # Get the associated train
             train = db.query(TrainModel).filter(TrainModel.id == schedule.train_id).first()
-            
             # Create schedule dict with train details
+            train_dict = None
+            if train:
+                train_dict = {
+                    "id": train.id,
+                    "train_id": train.train_id,
+                    "type": train.type.value if hasattr(train.type, 'value') else str(train.type),
+                    "origin": train.origin,
+                    "destination": train.destination,
+                    "priority": train.priority,
+                    "capacity": train.capacity,
+                    "active": train.active,
+                    "arrival_time": train.arrival_time.isoformat() if hasattr(train, 'arrival_time') and train.arrival_time else None,
+                    "departure_time": train.departure_time.isoformat() if hasattr(train, 'departure_time') and train.departure_time else None
+                }
             schedule_dict = {
                 "id": schedule.id,
                 "schedule_id": schedule.schedule_id,
@@ -311,16 +325,7 @@ async def get_current_schedule(db: Session = Depends(get_db)):
                 "optimization_run_id": schedule.optimization_run_id,
                 "created_at": schedule.created_at,
                 "updated_at": schedule.updated_at,
-                "train": {
-                    "id": train.id,
-                    "train_id": train.train_id,
-                    "type": train.type.value if hasattr(train.type, 'value') else str(train.type),
-                    "origin": train.origin,
-                    "destination": train.destination,
-                    "priority": train.priority,
-                    "capacity": train.capacity,
-                    "active": train.active
-                } if train else None
+                "train": train_dict
             }
             result_schedules.append(schedule_dict)
 
@@ -403,4 +408,3 @@ async def override_decision(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create override: {str(e)}"
         )
-
