@@ -35,11 +35,51 @@ class SectionData:
     maintenance_windows: List[tuple[datetime, datetime]]
     capacity: int = 1  # Default capacity for single track
     single_track: bool = True  # Default assume single track
+    track_condition: Optional[str] = "GOOD"  # Track condition: GOOD, WORN, MAINTENANCE
+    weather_condition: Optional[str] = "CLEAR"  # Weather condition: CLEAR, RAIN, HEAVY_RAIN, FOG
 
     def calculate_travel_time(self, buffer_factor: float = 1.15) -> int:
-        """Calculate travel time for this section with buffer."""
+        """
+        Calculate travel time for this section with environmental factors.
+        
+        Args:
+            buffer_factor: Base buffer factor for normal conditions
+            
+        Returns:
+            Travel time in minutes considering weather and track conditions
+        """
         base_time_hours = self.length_km / self.max_speed_kmh
-        actual_time_hours = base_time_hours * buffer_factor
+        
+        # Apply environmental multipliers
+        environmental_multiplier = 1.0
+        
+        # Weather condition multipliers
+        weather_multipliers = {
+            "CLEAR": 1.0,
+            "RAIN": 1.15,      # 15% slower in rain
+            "HEAVY_RAIN": 1.25, # 25% slower in heavy rain
+            "FOG": 1.20        # 20% slower in fog
+        }
+        
+        # Track condition multipliers
+        track_multipliers = {
+            "GOOD": 1.0,
+            "WORN": 1.10,      # 10% slower on worn tracks
+            "MAINTENANCE": 1.40 # 40% slower during maintenance
+        }
+        
+        # Apply weather multiplier
+        if self.weather_condition in weather_multipliers:
+            environmental_multiplier *= weather_multipliers[self.weather_condition]
+        
+        # Apply track condition multiplier
+        if self.track_condition in track_multipliers:
+            environmental_multiplier *= track_multipliers[self.track_condition]
+        
+        # Calculate final travel time
+        total_multiplier = buffer_factor * environmental_multiplier
+        actual_time_hours = base_time_hours * total_multiplier
+        
         return int(actual_time_hours * 60)  # Convert to minutes
 
 @dataclass

@@ -99,13 +99,54 @@ class OptimizationRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SimulationType(str, Enum):
+    """Simulation type enumeration."""
+    TRAIN_DELAY = "TRAIN_DELAY"
+    ENVIRONMENTAL_CONDITION = "ENVIRONMENTAL_CONDITION"
+
+
+class TrackConditionEnum(str, Enum):
+    """Track condition enumeration for API schemas."""
+    GOOD = "GOOD"
+    WORN = "WORN"
+    MAINTENANCE = "MAINTENANCE"
+
+
+class WeatherConditionEnum(str, Enum):
+    """Weather condition enumeration for API schemas."""
+    CLEAR = "CLEAR"
+    RAIN = "RAIN"
+    HEAVY_RAIN = "HEAVY_RAIN"
+    FOG = "FOG"
+
+
+class DisruptionEvent(BaseModel):
+    """Enhanced disruption event model for environmental and delay simulations."""
+    simulation_type: SimulationType = Field(..., description="Type of simulation to run")
+    
+    # For train delay simulations
+    delay_minutes: Optional[int] = Field(None, description="Delay in minutes for train delay simulation")
+    affected_trains: Optional[list[str]] = Field(None, description="List of affected train IDs for delay simulation")
+    
+    # For environmental condition simulations
+    affected_sections: Optional[list[str]] = Field(None, description="List of affected section IDs for environmental simulation")
+    weather_condition: Optional[WeatherConditionEnum] = Field(None, description="Weather condition for environmental simulation")
+    track_condition: Optional[TrackConditionEnum] = Field(None, description="Track condition for environmental simulation")
+    
+    # Common fields
+    description: Optional[str] = Field(None, description="Description of the disruption event")
+    duration_minutes: Optional[int] = Field(60, description="Duration of the disruption in minutes")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class WhatIfRequest(BaseModel):
     """Schema for what-if analysis requests."""
-    disruption: dict = Field(..., description="Disruption parameters")
-    affected_trains: Optional[list[str]] = Field(
-        None,
-        description="List of affected train IDs"
-    )
+    disruption_event: DisruptionEvent = Field(..., description="Detailed disruption event parameters")
+    
+    # Legacy support for backward compatibility
+    disruption: Optional[dict] = Field(None, description="Legacy disruption parameters (deprecated)")
+    affected_trains: Optional[list[str]] = Field(None, description="Legacy affected trains list (deprecated)")
 
     model_config = ConfigDict(from_attributes=True)
 

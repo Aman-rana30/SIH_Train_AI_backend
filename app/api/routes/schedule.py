@@ -12,7 +12,7 @@ import logging
 from pydantic import BaseModel, ConfigDict
 
 from app.core.dependencies import get_db
-from app.schemas.train import OptimizationRequest, WhatIfRequest
+from app.schemas.train import OptimizationRequest, WhatIfRequest, DisruptionEvent as DisruptionEventSchema, SimulationType
 
 # Import the broadcast function from the websocket routes
 from app.api.routes.websocket import broadcast_optimization_complete
@@ -269,22 +269,26 @@ async def whatif_analysis(
                 'priority': getattr(train, "priority", 5)
             })
 
-        # Create disruption event with fallbacks for simple clients
-        effective_train_ids = set(request.affected_trains or [])
-        if train_id:
-            effective_train_ids.add(train_id)
-        delay_minutes_val = request.disruption.get('delay_minutes', 0)
-        if minutes is not None:
-            delay_minutes_val = int(minutes)
-
-        disruption = DisruptionEvent(
-            event_type=request.disruption.get('type', 'delay'),
-            affected_trains=list(effective_train_ids),
-            delay_minutes=delay_minutes_val,
-            start_time=datetime.now(timezone.utc),
-            duration_minutes=request.disruption.get('duration_minutes', 60),
-            description=request.disruption.get('description', 'Unknown disruption')
-        )
+        # Handle new disruption event format with backward compatibility
+        if hasattr(request, 'disruption_event') and request.disruption_event:
+            # New format with enhanced disruption event
+            disruption_event = request.disruption_event
+        else:
+            # Legacy format - convert to new format
+            effective_train_ids = set(request.affected_trains or [])
+            if train_id:
+                effective_train_ids.add(train_id)
+            delay_minutes_val = request.disruption.get('delay_minutes', 0) if request.disruption else 0
+            if minutes is not None:
+                delay_minutes_val = int(minutes)
+            
+            # Create legacy disruption event
+            disruption_event = DisruptionEventSchema(
+                simulation_type=SimulationType.TRAIN_DELAY,
+                delay_minutes=delay_minutes_val,
+                affected_trains=list(effective_train_ids),
+                description=request.disruption.get('description', 'Legacy disruption') if request.disruption else 'Legacy disruption'
+            )
 
         # Use full optimization logic with real sections (same as /optimize)
         db_sections = db.query(SectionModel).all()
@@ -294,16 +298,38 @@ async def whatif_analysis(
                 detail="No section data found. Please populate the 'sections' table with track segment information. Use POST /schedule/sections/sample to create sample data."
             )
 
-        sections_data = [
-            SectionData(
+        # Create sections data with environmental conditions
+        sections_data = []
+        for s in db_sections:
+            # Default conditions from database
+            track_condition = s.track_condition.value if hasattr(s, 'track_condition') and s.track_condition else "GOOD"
+            weather_condition = s.current_weather.value if hasattr(s, 'current_weather') and s.current_weather else "CLEAR"
+            
+            # Apply environmental disruption if applicable
+            if (disruption_event.simulation_type == SimulationType.ENVIRONMENTAL_CONDITION and 
+                disruption_event.affected_sections and 
+                s.section_id in disruption_event.affected_sections):
+                
+                if disruption_event.track_condition:
+                    track_condition = disruption_event.track_condition.value
+                if disruption_event.weather_condition:
+                    weather_condition = disruption_event.weather_condition.value
+            
+            sections_data.append(SectionData(
                 section_id=s.section_id,
                 length_km=s.length_km,
                 max_speed_kmh=s.max_speed_kmh,
                 maintenance_windows=[],
                 capacity=1,
-                single_track=True
-            ) for s in db_sections
-        ]
+                single_track=True,
+                track_condition=track_condition,
+                weather_condition=weather_condition
+            ))
+        
+        logger.info(f"Loaded {len(sections_data)} sections with environmental conditions")
+        for section in sections_data:
+            travel_time = section.calculate_travel_time()
+            logger.info(f"Section {section.section_id}: {section.length_km}km, track={section.track_condition}, weather={section.weather_condition} = {travel_time}min travel time")
 
         # Build baseline (current optimized departures) map for correct planned_time and delay calc
         baseline_departure: Dict[str, datetime] = {
@@ -316,9 +342,13 @@ async def whatif_analysis(
             arrival = s['optimized_arrival']
             departure = s['optimized_departure']
 
-            if s['train_id'] in disruption.affected_trains and disruption.event_type == 'delay':
-                arrival = arrival + timedelta(minutes=disruption.delay_minutes)
-                departure = departure + timedelta(minutes=disruption.delay_minutes)
+            # Apply train delay disruption if applicable
+            if (disruption_event.simulation_type == SimulationType.TRAIN_DELAY and 
+                disruption_event.affected_trains and 
+                s['train_id'] in disruption_event.affected_trains and 
+                disruption_event.delay_minutes):
+                arrival = arrival + timedelta(minutes=disruption_event.delay_minutes)
+                departure = departure + timedelta(minutes=disruption_event.delay_minutes)
 
             modified_trains.append(TrainData(
                 train_id=s['train_id'],
@@ -398,10 +428,18 @@ async def whatif_analysis(
 
         logger.info(f"What-if analysis completed: {len(saved_schedules)} schedules analyzed")
 
-        # Merge metrics and include total_delay and affected trains for UI
+        # Merge metrics and include disruption details for UI
         merged_metrics = dict(result.metrics or {})
         merged_metrics['total_delay'] = total_delay_minutes
-        merged_metrics['affected_trains'] = disruption.affected_trains
+        merged_metrics['simulation_type'] = disruption_event.simulation_type.value
+        
+        if disruption_event.simulation_type == SimulationType.TRAIN_DELAY:
+            merged_metrics['affected_trains'] = disruption_event.affected_trains or []
+            merged_metrics['delay_minutes'] = disruption_event.delay_minutes
+        elif disruption_event.simulation_type == SimulationType.ENVIRONMENTAL_CONDITION:
+            merged_metrics['affected_sections'] = disruption_event.affected_sections or []
+            merged_metrics['weather_condition'] = disruption_event.weather_condition.value if disruption_event.weather_condition else None
+            merged_metrics['track_condition'] = disruption_event.track_condition.value if disruption_event.track_condition else None
 
         # Return the OptimizationResult object for frontend rendering
         return OptimizationResult(
