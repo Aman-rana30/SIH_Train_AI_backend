@@ -210,7 +210,11 @@ async def optimize_schedule(
 @router.post("/whatif")
 async def whatif_analysis(
     request: WhatIfRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    # Fallbacks for simple clients (e.g., Settings form)
+    train_id: Optional[str] = Query(None, description="Affected train ID (fallback)"),
+    minutes: Optional[int] = Query(None, description="Delay minutes (fallback)"),
+    section_id: Optional[str] = Query(None, description="Filter schedules by section")
 ):
     """
     Perform what-if analysis for disruption scenarios.
@@ -226,12 +230,14 @@ async def whatif_analysis(
 
     try:
         # Get current active schedules and join trains to access human-readable train_id
-        current_schedules = (
+        query = (
             db.query(ScheduleModel, TrainModel)
             .join(TrainModel, ScheduleModel.train_id == TrainModel.id)
             .filter(ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]))
-            .all()
         )
+        if section_id:
+            query = query.filter(ScheduleModel.section_id == section_id)
+        current_schedules = query.all()
 
         if not current_schedules:
             raise HTTPException(
@@ -241,47 +247,130 @@ async def whatif_analysis(
 
         # Convert to dict format expected by what-if optimizer
         # IMPORTANT: Use human-readable TrainModel.train_id, not DB numeric ID
+        # NOTE: In DB, Schedule.planned_time/optimized_time are DEPARTURE-based (see /optimize)
+        #       So use optimized_time as optimized_departure and back-compute arrival via dwell.
         current_schedule_data = []
         for schedule, train in current_schedules:
+            # Dwell from original train times; fallback 10 minutes if missing
+            try:
+                dwell = (train.departure_time - train.arrival_time)
+            except Exception:
+                dwell = timedelta(minutes=10)
+            # DB optimized_time is optimized departure
+            opt_dep = schedule.optimized_time
+            opt_arr = opt_dep - dwell
+
             current_schedule_data.append({
                 'train_id': train.train_id,  # human-readable like "EXP001"
-                'optimized_arrival': schedule.optimized_time,
-                'optimized_departure': schedule.optimized_time + timedelta(minutes=10),  # Simplified
+                'optimized_arrival': opt_arr,
+                'optimized_departure': opt_dep,
                 'section_id': schedule.section_id,
                 'platform_need': schedule.platform_id or getattr(train, "platform_need", None) or 'P1',
                 'priority': getattr(train, "priority", 5)
             })
 
-        # Create disruption event
+        # Create disruption event with fallbacks for simple clients
+        effective_train_ids = set(request.affected_trains or [])
+        if train_id:
+            effective_train_ids.add(train_id)
+        delay_minutes_val = request.disruption.get('delay_minutes', 0)
+        if minutes is not None:
+            delay_minutes_val = int(minutes)
+
         disruption = DisruptionEvent(
             event_type=request.disruption.get('type', 'delay'),
-            affected_trains=request.affected_trains or [],
-            delay_minutes=request.disruption.get('delay_minutes', 0),
+            affected_trains=list(effective_train_ids),
+            delay_minutes=delay_minutes_val,
             start_time=datetime.now(timezone.utc),
             duration_minutes=request.disruption.get('duration_minutes', 60),
             description=request.disruption.get('description', 'Unknown disruption')
         )
 
-        # Run what-if analysis
-        optimizer = TrainSchedulingOptimizer(time_limit_seconds=20)
-        result = optimizer.what_if_analysis(current_schedule_data, disruption)
+        # Use full optimization logic with real sections (same as /optimize)
+        db_sections = db.query(SectionModel).all()
+        if not db_sections:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No section data found. Please populate the 'sections' table with track segment information. Use POST /schedule/sections/sample to create sample data."
+            )
+
+        sections_data = [
+            SectionData(
+                section_id=s.section_id,
+                length_km=s.length_km,
+                max_speed_kmh=s.max_speed_kmh,
+                maintenance_windows=[],
+                capacity=1,
+                single_track=True
+            ) for s in db_sections
+        ]
+
+        # Build baseline (current optimized departures) map for correct planned_time and delay calc
+        baseline_departure: Dict[str, datetime] = {
+            s['train_id']: s['optimized_departure'] for s in current_schedule_data
+        }
+
+        # Build modified trains by applying disruption to current optimized departures
+        modified_trains: List[TrainData] = []
+        for s in current_schedule_data:
+            arrival = s['optimized_arrival']
+            departure = s['optimized_departure']
+
+            if s['train_id'] in disruption.affected_trains and disruption.event_type == 'delay':
+                arrival = arrival + timedelta(minutes=disruption.delay_minutes)
+                departure = departure + timedelta(minutes=disruption.delay_minutes)
+
+            modified_trains.append(TrainData(
+                train_id=s['train_id'],
+                type="Express",  # simplified type; actual constraints are section/priority driven
+                arrival_time=arrival,
+                departure_time=departure,
+                section_id=s['section_id'],
+                platform_need=s['platform_need'],
+                priority=s['priority']
+            ))
+
+        # Time horizon based on modified trains
+        min_time = min(t.arrival_time for t in modified_trains)
+        max_time = max(t.departure_time for t in modified_trains)
+        time_horizon = (min_time - timedelta(hours=1), max_time + timedelta(hours=2))
+
+        optimizer = TrainSchedulingOptimizer(time_limit_seconds=30)
+        opt_input = OptimizationInput(
+            trains=modified_trains,
+            sections=sections_data,
+            platforms=[],
+            time_horizon=time_horizon,
+            constraints={}
+        )
+        result = optimizer.optimize_schedule(opt_input)
 
         # Generate what-if run ID
         whatif_run_id = f"whatif_{str(uuid.uuid4())[:8]}"
 
         # Build transient schedules mapped back to full Train objects
         saved_schedules: List[Schedule] = []
+        total_delay_minutes = 0
         for schedule_data in result.schedules:
+            tid = schedule_data['train_id']
+            planned_dep = baseline_departure.get(tid, schedule_data['original_departure'])
+            optimized_dep = schedule_data['optimized_departure']
+            # Recompute delay as optimized - planned (departure-based)
+            recomputed_delay = int((optimized_dep - planned_dep).total_seconds() // 60)
+            if recomputed_delay < 0:
+                recomputed_delay = 0
+            total_delay_minutes += recomputed_delay
+
             # schedule_data['train_id'] is human-readable; map back to TrainModel
             train: Optional[TrainModel] = (
                 db.query(TrainModel)
-                .filter(TrainModel.train_id == schedule_data['train_id'])
+                .filter(TrainModel.train_id == tid)
                 .first()
             )
 
             if not train:
                 logger.warning(
-                    f"What-if: train with train_id={schedule_data['train_id']} not found; skipping schedule."
+                    f"What-if: train with train_id={tid} not found; skipping schedule."
                 )
                 continue
 
@@ -293,11 +382,11 @@ async def whatif_analysis(
                 id=0,  # Transient (not persisted)
                 schedule_id=f"{whatif_run_id}_{train.train_id}",
                 train_id=train.id,  # DB FK for consistency
-                planned_time=schedule_data['original_arrival'],
-                optimized_time=schedule_data['optimized_arrival'],
+                planned_time=planned_dep,  # baseline departure before disruption
+                optimized_time=optimized_dep,  # optimized departure after disruption
                 section_id=schedule_data['section_id'],
                 platform_id=schedule_data['platform_need'],
-                delay_minutes=schedule_data['delay_minutes'],
+                delay_minutes=recomputed_delay,
                 optimization_run_id=whatif_run_id,
                 status=ScheduleStatus.WAITING,
                 created_at=datetime.now(timezone.utc),
@@ -309,11 +398,16 @@ async def whatif_analysis(
 
         logger.info(f"What-if analysis completed: {len(saved_schedules)} schedules analyzed")
 
+        # Merge metrics and include total_delay and affected trains for UI
+        merged_metrics = dict(result.metrics or {})
+        merged_metrics['total_delay'] = total_delay_minutes
+        merged_metrics['affected_trains'] = disruption.affected_trains
+
         # Return the OptimizationResult object for frontend rendering
         return OptimizationResult(
             optimization_run_id=whatif_run_id,
             schedules=saved_schedules,
-            metrics=result.metrics,
+            metrics=merged_metrics,
             computation_time=result.computation_time,
             status=f"WHATIF_{result.status}"
         )
