@@ -302,6 +302,16 @@ async def broadcast_metrics_update(metrics_data: Dict[str, Any]):
     await manager.broadcast(message)
 
 
+async def broadcast_train_departure(departure_data: Dict[str, Any]):
+    """Broadcast train departure notification to all clients."""
+    message = {
+        "type": "train_departure",
+        "timestamp": datetime.utcnow().isoformat(),
+        "data": departure_data
+    }
+    await manager.broadcast(message)
+
+
 # Background task for periodic updates (example)
 async def periodic_updates():
     while True:

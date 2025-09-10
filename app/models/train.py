@@ -9,9 +9,14 @@ from app.db.base import Base
 
 
 class TrainType(enum.Enum):
-    """Enumeration for train types with priority order."""
+    """Enumeration for core train operational categories."""
     EXPRESS = "Express"
-    PASSENGER = "Passenger" 
+    SUPERFAST = "Superfast"
+    SHATABDI = "Shatabdi"
+    RAJDHANI = "Rajdhani"
+    DURONTO = "Duronto"
+    GARIB_RATH = "GaribRath"
+    PASSENGER = "Passenger"
     FREIGHT = "Freight"
     LOCAL = "Local"
 
@@ -22,7 +27,8 @@ class Train(Base):
 
     Attributes:
         train_id: Unique identifier for the train
-        type: Train type (Express, Passenger, Freight, Local)
+        type: Core train operational category (Express, Superfast, Shatabdi, etc.)
+        sub_type: Optional specific train name/variant (e.g., "Hirakund Express", "Swarna Jayanti")
         arrival_time: Scheduled arrival time
         departure_time: Scheduled departure time
         section_id: Railway section identifier
@@ -38,6 +44,7 @@ class Train(Base):
     id = Column(Integer, primary_key=True, index=True)
     train_id = Column(String(50), unique=True, index=True, nullable=False)
     type = Column(Enum(TrainType), nullable=False)
+    sub_type = Column(String(100), nullable=True)  # Optional specific train name/variant
     arrival_time = Column(DateTime, nullable=False)
     departure_time = Column(DateTime, nullable=False)
     section_id = Column(String(20), nullable=False)

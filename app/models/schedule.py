@@ -16,6 +16,7 @@ class ScheduleStatus(enum.Enum):
     DELAYED = "DELAYED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
+    DEPARTED = "DEPARTED"
 
 
 class Schedule(Base):
@@ -37,7 +38,7 @@ class Schedule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     schedule_id = Column(String(50), unique=True, index=True, nullable=False)
-    train_id = Column(Integer, nullable=False)  # Temporarily removed foreign key for testing
+    train_id = Column(String(50), nullable=False)  # Store human-readable train_id (e.g., "14505")
     planned_time = Column(DateTime, nullable=False)
     optimized_time = Column(DateTime, nullable=False)
     status = Column(Enum(ScheduleStatus), nullable=False, default=ScheduleStatus.WAITING)

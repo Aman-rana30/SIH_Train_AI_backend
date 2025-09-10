@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 class OverrideBase(BaseModel):
     """Base override schema."""
     override_id: str = Field(..., description="Unique override identifier")
-    train_id: int = Field(..., description="Affected train ID")
+    train_id: str = Field(..., description="Affected train ID (human-readable, e.g., '14505')")
     controller_decision: str = Field(..., description="Manual controller decision")
     ai_recommendation: Optional[str] = Field(None, description="AI recommendation")
     reason: Optional[str] = Field(None, description="Reason for override")
@@ -37,7 +37,7 @@ class Override(OverrideBase):
 
 class OverrideRequest(BaseModel):
     """Schema for override requests from controllers."""
-    train_id: int = Field(..., description="Train to override")
+    train_id: str = Field(..., description="Train to override (human-readable, e.g., '14505')")
     decision: str = Field(..., description="Controller decision")
     reason: Optional[str] = Field(None, description="Reason for override")
     new_schedule_time: Optional[datetime] = Field(None, description="New scheduled time")

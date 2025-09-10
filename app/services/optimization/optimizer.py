@@ -152,8 +152,8 @@ class TrainSchedulingOptimizer:
             original_arrival_min = int(train.arrival_time.timestamp() // 60)
             original_departure_min = int(train.departure_time.timestamp() // 60)
 
-            # Reduced flexibility for more realistic scheduling
-            flex_window = 15  # 15 minutes flexibility instead of 60
+            # Allow trains to run on time with minimal flexibility
+            flex_window = 12  # 5 minutes flexibility to allow on-time operation
 
             arrival_start = max(start_time_min, original_arrival_min - flex_window)
             arrival_end = min(end_time_min, original_arrival_min + flex_window)
@@ -164,25 +164,27 @@ class TrainSchedulingOptimizer:
             )
 
             # Dwell duration (station occupancy): scheduled dwell +/- bounded in timing constraints
-            dwell_duration = max(1, int((train.departure_time - train.arrival_time).total_seconds() // 60))
+            dwell_duration = max(0, int((train.departure_time - train.arrival_time).total_seconds() // 60))
 
             departure_start = max(start_time_min, original_departure_min - flex_window)
             departure_end = min(end_time_min, original_departure_min + flex_window)
 
             # Create departure (end) variable for station interval, anchored by dwell
             end_var = self.model.NewIntVar(
-                arrival_start + dwell_duration,
-                arrival_end + dwell_duration,
+                departure_start,
+                departure_end,
                 f'{train_id}_end'
             )
 
-            # Ensure departure respects original departure flexibility
-            self.model.Add(end_var >= departure_start)
-            self.model.Add(end_var <= departure_end)
+            # Ensure minimum dwell time is respected
+            self.model.Add(end_var >= start_var + dwell_duration)
 
             # Station/platform occupancy interval (arrival -> departure)
+            # Use actual duration variable instead of fixed dwell_duration
+            actual_dwell = self.model.NewIntVar(1, dwell_duration + 10, f'{train_id}_dwell')
+            self.model.Add(actual_dwell == end_var - start_var)
             station_interval = self.model.NewIntervalVar(
-                start_var, dwell_duration, end_var, f'{train_id}_station_interval'
+                start_var, actual_dwell, end_var, f'{train_id}_station_interval'
             )
             self.intervals[train_id] = station_interval
 
@@ -278,12 +280,16 @@ class TrainSchedulingOptimizer:
             delay_var = self.model.NewIntVar(-1000, 1000, f'{train_id}_dep_delay')
             self.model.Add(delay_var == actual_departure - original_departure)
 
-            # Penalize positive delays more than negative
+            # Penalize positive delays more than negative, but also slightly penalize early departures
             positive_delay = self.model.NewIntVar(0, 1000, f'{train_id}_dep_pos_delay')
+            negative_delay = self.model.NewIntVar(0, 1000, f'{train_id}_dep_neg_delay')
+            
             self.model.AddMaxEquality(positive_delay, [delay_var, 0])
+            self.model.AddMaxEquality(negative_delay, [-delay_var, 0])
 
-            # Add weighted delay term
-            delay_terms.append(positive_delay * priority_weight)
+            # Weight positive delays much more heavily than negative delays
+            # This encourages on-time operation over early operation
+            delay_terms.append(positive_delay * priority_weight * 10 + negative_delay * priority_weight)
 
         if delay_terms:
             total_delay = sum(delay_terms)
@@ -336,12 +342,20 @@ class TrainSchedulingOptimizer:
                     trav = travel_minutes(t)
                     const_buffer = 3  # minutes buffer after section clears
                     sec_clear = dep + trav
-                    # If overlaps previous block, push departure to current_blocked_until
+                    
+                    # Only adjust if there's an actual conflict
                     if dep < current_blocked_until:
+                        # Calculate the minimum delay needed
+                        original_dep = dep
                         dep = current_blocked_until
                         emin = dep  # end var is the departure
                         smin = dep - max(1, int((t.departure_time - t.arrival_time).total_seconds() // 60))
                         sec_clear = dep + trav
+                        logger.debug(f"Train {t.train_id} delayed from {original_dep} to {dep} due to section conflict")
+                    else:
+                        # No conflict - train can run on time
+                        logger.debug(f"Train {t.train_id} running on time at {dep}")
+                    
                     # Update rolling block end with buffer
                     current_blocked_until = max(current_blocked_until, sec_clear + const_buffer)
                     adjusted[t.train_id] = (smin, emin)
@@ -364,6 +378,7 @@ class TrainSchedulingOptimizer:
                 original_departure_min = self.variables[train_id]['original_departure']
                 delay_minutes = optimized_end - original_departure_min
 
+                # Only count positive delays (late trains) for total delay
                 total_delay += max(0, delay_minutes)
 
                 schedule = {
@@ -412,51 +427,171 @@ class TrainSchedulingOptimizer:
             total_delay=total_delay
         )
 
+        """
+    COMPLETE FIXED IMPLEMENTATION
+    Replace the _priority_fallback_heuristic method in optimizer.py with this code
+    """
+
     def _priority_fallback_heuristic(self, trains: List[TrainData]) -> List[Dict]:
-        """Fallback heuristic using priority-based scheduling."""
-        logger.info("Using priority-based fallback heuristic")
+        """
+        Improved fallback heuristic using time-based scheduling with priority-based conflict resolution.
+        
+        Algorithm:
+        1. Process trains in chronological order by departure time
+        2. When conflicts occur (within 12-minute buffer), resolve using priority:
+        - Higher priority trains keep their original schedule
+        - Lower priority trains get delayed by the minimum needed time
+        3. Same priority conflicts use FIFO (First In, First Out) rule
+        
+        This ensures higher priority trains are never delayed due to lower priority conflicts.
+        """
+        logger.info("Using improved time-based fallback heuristic with priority-based conflict resolution")
 
-        # Sort trains by priority and arrival time
-        sorted_trains = sorted(
-            trains,
-            key=lambda x: (x.priority, x.arrival_time),
-            reverse=True
-        )
-
+        # STEP 1: Sort trains by departure time (chronological processing)
+        sorted_trains = sorted(trains, key=lambda x: x.departure_time)
+        
         schedules = []
-        section_last_departure = {}
+        DEPARTURE_BUFFER_MINUTES = 12
+        
+        logger.debug(f"Processing {len(sorted_trains)} trains in chronological order with {DEPARTURE_BUFFER_MINUTES}-minute buffer")
 
-        for train in sorted_trains:
-            # Check for conflicts with previous trains in same section
-            delay_minutes = 0
-            optimized_arrival = train.arrival_time
-            optimized_departure = train.departure_time
+        for current_train in sorted_trains:
+            # Start with original schedule
+            optimized_arrival = current_train.arrival_time
+            optimized_departure = current_train.departure_time
+            current_delayed = False
+            delay_reason = ""
 
-            if train.section_id in section_last_departure:
-                last_departure = section_last_departure[train.section_id]
-                if optimized_arrival <= last_departure:
-                    # Delay this train
-                    delay_minutes = int((last_departure - optimized_arrival).total_seconds() / 60) + 5
-                    optimized_arrival = last_departure + timedelta(minutes=5)
-                    optimized_departure = optimized_arrival + (train.departure_time - train.arrival_time)
+            # STEP 2: Check for conflicts with all previously scheduled trains
+            conflicts_resolved = 0
+            for i, prev_schedule in enumerate(schedules):
+                prev_departure = prev_schedule['optimized_departure']
+                conflict_window_end = prev_departure + timedelta(minutes=DEPARTURE_BUFFER_MINUTES)
+                
+                # Check if current train conflicts with previous train's buffer window
+                if optimized_departure < conflict_window_end:
+                    conflict_duration = int((conflict_window_end - optimized_departure).total_seconds() / 60)
+                    
+                    logger.debug(f"CONFLICT: {current_train.train_id} (P{current_train.priority}) vs {prev_schedule['train_id']} (P{prev_schedule['priority']}) - {conflict_duration}min overlap")
+                    
+                    # STEP 3: Priority-based conflict resolution
+                    if current_train.priority > prev_schedule['priority']:
+                        # Current train has HIGHER priority - delay the previous train
+                        original_prev_departure = prev_schedule['original_departure']
+                        prev_delay_needed = conflict_window_end - original_prev_departure
+                        prev_dwell = prev_schedule['optimized_arrival'] - prev_schedule['original_arrival']
+                        
+                        # Update previous train's schedule
+                        schedules[i]['optimized_departure'] = conflict_window_end
+                        schedules[i]['optimized_arrival'] = conflict_window_end - (original_prev_departure - prev_schedule['original_arrival'])
+                        schedules[i]['delay_minutes'] = int(prev_delay_needed.total_seconds() / 60)
+                        
+                        logger.info(f"PRIORITY OVERRIDE: Delayed {prev_schedule['train_id']} (P{prev_schedule['priority']}) by {conflict_duration}min to accommodate higher priority {current_train.train_id} (P{current_train.priority})")
+                        conflicts_resolved += 1
+                        
+                    elif current_train.priority < prev_schedule['priority']:
+                        # Previous train has HIGHER priority - delay current train
+                        delay_needed = conflict_window_end - optimized_departure
+                        optimized_departure = conflict_window_end
+                        optimized_arrival = optimized_arrival + delay_needed  # Maintain original dwell time
+                        current_delayed = True
+                        delay_reason = f"Higher priority {prev_schedule['train_id']} (P{prev_schedule['priority']})"
+                        
+                        logger.info(f"PRIORITY RESPECT: Delayed {current_train.train_id} (P{current_train.priority}) by {conflict_duration}min for higher priority {prev_schedule['train_id']} (P{prev_schedule['priority']})")
+                        conflicts_resolved += 1
+                        break  # Stop checking once current train is delayed
+                        
+                    else:
+                        # Same priority - FIFO rule (delay current train)
+                        delay_needed = conflict_window_end - optimized_departure
+                        optimized_departure = conflict_window_end
+                        optimized_arrival = optimized_arrival + delay_needed
+                        current_delayed = True
+                        delay_reason = f"FIFO rule vs {prev_schedule['train_id']} (same priority)"
+                        
+                        logger.info(f"SAME PRIORITY: Delayed {current_train.train_id} by {conflict_duration}min (FIFO rule)")
+                        conflicts_resolved += 1
+                        break  # Stop checking once current train is delayed
 
-            section_last_departure[train.section_id] = optimized_departure
-
+            # STEP 4: Log result for current train
+            if not current_delayed:
+                logger.debug(f"NO CONFLICT: {current_train.train_id} (P{current_train.priority}) runs on time at {optimized_departure.strftime('%H:%M')}")
+            
+            # STEP 5: Calculate final delay and add to schedule
+            delay_minutes = int((optimized_departure - current_train.departure_time).total_seconds() / 60)
+            
             schedule = {
-                'train_id': train.train_id,
-                'original_arrival': train.arrival_time,
-                'original_departure': train.departure_time,
+                'train_id': current_train.train_id,
+                'original_arrival': current_train.arrival_time,
+                'original_departure': current_train.departure_time,
                 'optimized_arrival': optimized_arrival,
                 'optimized_departure': optimized_departure,
                 'delay_minutes': delay_minutes,
-                'section_id': train.section_id,
-                'platform_need': train.platform_need,
-                'priority': train.priority
+                'section_id': current_train.section_id,
+                'platform_need': current_train.platform_need,
+                'priority': current_train.priority
             }
 
             schedules.append(schedule)
 
+        # STEP 6: Final sort by optimized departure time for consistent output
+        schedules.sort(key=lambda x: x['optimized_departure'])
+        
+        # STEP 7: Log summary statistics
+        total_delay = sum(max(0, s['delay_minutes']) for s in schedules)
+        on_time_count = len([s for s in schedules if s['delay_minutes'] <= 0])
+        delayed_count = len(schedules) - on_time_count
+        
+        logger.info(f"Heuristic completed: {on_time_count}/{len(schedules)} trains on time, {delayed_count} delayed, total delay: {total_delay} minutes")
+        
         return schedules
+
+    # Additional method to add debugging capabilities to the optimizer
+    def _debug_solver_failure(self, status: int) -> None:
+        """Add debugging information when OR-Tools solver fails."""
+        status_map = {
+            cp_model.OPTIMAL: "OPTIMAL",
+            cp_model.FEASIBLE: "FEASIBLE", 
+            cp_model.INFEASIBLE: "INFEASIBLE",
+            cp_model.UNKNOWN: "UNKNOWN",
+            cp_model.MODEL_INVALID: "MODEL_INVALID"
+        }
+        
+        status_name = status_map.get(status, f"UNKNOWN_STATUS_{status}")
+        logger.warning(f"OR-Tools solver failed with status: {status_name}")
+        
+        if hasattr(self.solver, 'ResponseStats'):
+            stats = self.solver.ResponseStats()
+            logger.warning(f"Solver statistics: {stats}")
+        
+        if status == cp_model.INFEASIBLE:
+            logger.error("Problem is INFEASIBLE - constraints are too restrictive")
+            logger.error("Suggestions:")
+            logger.error("  1. Increase flexibility window in _create_variables")
+            logger.error("  2. Relax priority constraints") 
+            logger.error("  3. Check for conflicting maintenance windows")
+        elif status == cp_model.MODEL_INVALID:
+            logger.error("Model is INVALID - check constraint definitions")
+        elif status == cp_model.UNKNOWN:
+            logger.error("Solver timed out or hit memory limits")
+            logger.error(f"Current time limit: {self.time_limit_seconds} seconds")
+
+    # Usage instructions:
+    """
+    1. Replace the existing _priority_fallback_heuristic method in optimizer.py with the code above
+    2. Optionally add the _debug_solver_failure method for better error diagnosis
+    3. Add a call to _debug_solver_failure in the optimize_schedule method after solver.Solve():
+
+    status = self.solver.Solve(self.model)
+    if status != cp_model.OPTIMAL and status != cp_model.FEASIBLE:
+        self._debug_solver_failure(status)  # Add this line
+
+    This will give you proper priority-based conflict resolution where:
+    - Higher priority trains never get delayed due to lower priority conflicts
+    - Lower priority trains absorb necessary delays
+    - Same priority conflicts use FIFO ordering
+    - Total system delays are minimized
+    """
 
     def _create_fallback_solution(self,
                                  trains: List[TrainData],

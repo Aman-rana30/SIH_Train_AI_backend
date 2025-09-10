@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 from datetime import datetime, timedelta, timezone
+
+# Indian Standard Time timezone (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 import logging
 
 from pydantic import BaseModel, ConfigDict
@@ -14,8 +17,8 @@ from pydantic import BaseModel, ConfigDict
 from app.core.dependencies import get_db
 from app.schemas.train import OptimizationRequest, WhatIfRequest, DisruptionEvent as DisruptionEventSchema, SimulationType
 
-# Import the broadcast function from the websocket routes
-from app.api.routes.websocket import broadcast_optimization_complete
+# Import the broadcast functions from the websocket routes
+from app.api.routes.websocket import broadcast_optimization_complete, broadcast_train_departure
 
 # Import proper schemas to avoid circular imports
 from app.schemas.schedule import Schedule, ScheduleCreate, OptimizationResult
@@ -142,7 +145,7 @@ async def optimize_schedule(
         # Save schedules to database
         saved_schedules = []
         for schedule_data in result.schedules:
-            # --- START FIX: Look up the train to get its database ID ---
+            # Use human-readable train_id directly for schedules
             train = db.query(TrainModel).filter(TrainModel.train_id == schedule_data['train_id']).first()
             if not train:
                 logger.warning(f"Could not find train {schedule_data['train_id']} in the database to save schedule.")
@@ -150,7 +153,7 @@ async def optimize_schedule(
 
             schedule_create = ScheduleCreate(
                 schedule_id=f"{optimization_run_id}_{schedule_data['train_id']}",
-                train_id=train.id,  # Use the actual database ID
+                train_id=train.train_id,  # store varchar train_id in schedules
                 # Store departure-based times so frontend reflects section conflicts
                 planned_time=schedule_data['original_departure'],
                 optimized_time=schedule_data['optimized_departure'],
@@ -160,7 +163,6 @@ async def optimize_schedule(
                 optimization_run_id=optimization_run_id,
                 status=ScheduleStatus.WAITING
             )
-            # --- END FIX ---
 
             # Create database record
             db_schedule = ScheduleModel(
@@ -232,7 +234,7 @@ async def whatif_analysis(
         # Get current active schedules and join trains to access human-readable train_id
         query = (
             db.query(ScheduleModel, TrainModel)
-            .join(TrainModel, ScheduleModel.train_id == TrainModel.id)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.train_id)
             .filter(ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]))
         )
         if section_id:
@@ -463,25 +465,41 @@ async def get_current_schedule(
     db: Session = Depends(get_db)
 ):
     """
-    Get the current optimized schedule from database.
+    Get the current optimized schedule from database, filtered for the next 8 hours from current time.
+    Includes delayed trains that are now scheduled after current time.
 
     Args:
         section_id: Optional section filter; when provided, only schedules matching this section_id are returned
         db: Database session
 
     Returns:
-        List of current active schedules with full train details
+        List of current active schedules with full train details for next 8 hours
     """
     try:
-        # Base query joining with train to ensure related existence
+        # Get current time and 8 hours from now in Indian Standard Time
+        current_time = datetime.now(IST)
+        eight_hours_later = current_time + timedelta(hours=8)
+        
+        logger.info(f"Filtering schedules from {current_time} to {eight_hours_later}")
+        
+        # Debug: Check how many trains exist in the database
+        total_trains = db.query(TrainModel).filter(TrainModel.section_id == section_id if section_id else True).count()
+        logger.info(f"Total trains in database for section {section_id}: {total_trains}")
+        
+        # Base query joining with train to ensure related existence (join by varchar key)
         query = (
             db.query(ScheduleModel)
-            .join(TrainModel, ScheduleModel.train_id == TrainModel.id)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.train_id)
             .filter(
                 ScheduleModel.status.in_([
                     ScheduleStatus.WAITING,
                     ScheduleStatus.MOVING
                 ])
+            )
+            # Filter for trains scheduled to depart in the next 8 hours (based on planned/scheduled departure)
+            .filter(
+                ScheduleModel.planned_time >= current_time,
+                ScheduleModel.planned_time <= eight_hours_later
             )
         )
 
@@ -495,8 +513,8 @@ async def get_current_schedule(
         # Create schedule objects with train details
         result_schedules = []
         for schedule in schedules:
-            # Get the associated train
-            train = db.query(TrainModel).filter(TrainModel.id == schedule.train_id).first()
+            # Get the associated train (join by human-readable key)
+            train = db.query(TrainModel).filter(TrainModel.train_id == schedule.train_id).first()
 
             # Create schedule dict with train details
             train_dict = None
@@ -553,6 +571,7 @@ async def refresh_and_get_current_schedule(
     - Runs optimizer with DB sections
     - Replaces existing WAITING/MOVING schedules for the same scope with the new run
     - Returns the same shape as GET /current so the frontend can just call this on refresh
+    - Filters results for the next 8 hours from current time
     """
     try:
         # 1) Load active trains from DB
@@ -616,7 +635,7 @@ async def refresh_and_get_current_schedule(
                 ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING])
             )
         # Mark previous active schedules as CANCELLED
-        q.update({"status": ScheduleStatus.CANCELLED, "updated_at": datetime.now(timezone.utc)})
+        q.update({"status": ScheduleStatus.CANCELLED, "updated_at": datetime.now(IST)})
 
         optimization_run_id = f"refresh_{str(uuid.uuid4())[:8]}"
         saved = []
@@ -626,7 +645,7 @@ async def refresh_and_get_current_schedule(
                 continue
             db_schedule = ScheduleModel(
                 schedule_id=f"{optimization_run_id}_{schedule_data['train_id']}",
-                train_id=train.id,
+                train_id=train.train_id,  # store varchar key
                 planned_time=schedule_data['original_departure'],
                 optimized_time=schedule_data['optimized_departure'],
                 section_id=schedule_data['section_id'],
@@ -634,7 +653,7 @@ async def refresh_and_get_current_schedule(
                 delay_minutes=schedule_data['delay_minutes'],
                 optimization_run_id=optimization_run_id,
                 status=ScheduleStatus.WAITING,
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(IST)
             )
             db.add(db_schedule)
             db.flush()
@@ -642,10 +661,39 @@ async def refresh_and_get_current_schedule(
 
         db.commit()
 
-        # 4) Return the same shape as GET /current
+        # 4) Return the same shape as GET /current, filtered for next 8 hours
+        # Instead of only returning the freshly saved items (which could miss valid existing items),
+        # query the DB for all active schedules in the requested window to ensure completeness.
+        current_time = datetime.now(IST)
+        eight_hours_later = current_time + timedelta(hours=8)
+
+        logger.info(
+            f"Refresh API: Saved {len(saved)} schedules. Fetching all active schedules between {current_time} and {eight_hours_later} (by planned_time)"
+        )
+
+        # Base query for active schedules in the time window (using planned/scheduled departure)
+        q = (
+            db.query(ScheduleModel)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.train_id)
+            .filter(
+                ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]),
+                ScheduleModel.planned_time >= current_time,
+                ScheduleModel.planned_time <= eight_hours_later,
+            )
+        )
+        if section_id:
+            q = q.filter(ScheduleModel.section_id == section_id)
+
+        schedules = q.order_by(ScheduleModel.optimized_time).all()
+
         result_schedules = []
-        for schedule in saved:
-            train = db.query(TrainModel).filter(TrainModel.id == schedule.train_id).first()
+        for schedule in schedules:
+            # Normalize timezone for safe comparisons and consistent output
+            schedule_time = schedule.optimized_time
+            if schedule_time and schedule_time.tzinfo is None:
+                schedule_time = schedule_time.replace(tzinfo=IST)
+
+            train = db.query(TrainModel).filter(TrainModel.train_id == schedule.train_id).first()
             train_dict = None
             if train:
                 train_dict = {
@@ -659,23 +707,26 @@ async def refresh_and_get_current_schedule(
                     "active": train.active,
                     "arrival_time": train.arrival_time.isoformat() if hasattr(train, 'arrival_time') and train.arrival_time else None,
                     "departure_time": train.departure_time.isoformat() if hasattr(train, 'departure_time') and train.departure_time else None,
-                    "platform_need": train.platform_need
+                    "platform_need": train.platform_need,
                 }
-            result_schedules.append({
-                "id": schedule.id,
-                "schedule_id": schedule.schedule_id,
-                "train_id": schedule.train_id,
-                "planned_time": schedule.planned_time,
-                "optimized_time": schedule.optimized_time,
-                "section_id": schedule.section_id,
-                "platform_id": schedule.platform_id,
-                "status": schedule.status.value if hasattr(schedule.status, 'value') else str(schedule.status),
-                "delay_minutes": schedule.delay_minutes,
-                "optimization_run_id": schedule.optimization_run_id,
-                "created_at": schedule.created_at,
-                "updated_at": schedule.updated_at,
-                "train": train_dict
-            })
+
+            result_schedules.append(
+                {
+                    "id": schedule.id,
+                    "schedule_id": schedule.schedule_id,
+                    "train_id": schedule.train_id,
+                    "planned_time": schedule.planned_time,
+                    "optimized_time": schedule_time or schedule.optimized_time,
+                    "section_id": schedule.section_id,
+                    "platform_id": schedule.platform_id,
+                    "status": schedule.status.value if hasattr(schedule.status, 'value') else str(schedule.status),
+                    "delay_minutes": schedule.delay_minutes,
+                    "optimization_run_id": schedule.optimization_run_id,
+                    "created_at": schedule.created_at,
+                    "updated_at": schedule.updated_at,
+                    "train": train_dict,
+                }
+            )
 
         return result_schedules
 
@@ -685,6 +736,91 @@ async def refresh_and_get_current_schedule(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to refresh schedule: {str(e)}"
+        )
+
+@router.get("/departed")
+async def check_departed_trains(
+    section_id: Optional[str] = Query(default=None, description="Filter by section_id"),
+    db: Session = Depends(get_db)
+):
+    """
+    Check for trains that have departed (their optimized departure time has passed).
+    Updates their status to DEPARTED and returns the list of newly departed trains.
+    
+    Args:
+        section_id: Optional section filter
+        db: Database session
+        
+    Returns:
+        List of trains that have just departed
+    """
+    try:
+        current_time = datetime.now(IST)
+        
+        # Find trains that should have departed (optimized_time <= current_time) but are still WAITING or MOVING
+        query = (
+            db.query(ScheduleModel)
+            .join(TrainModel, ScheduleModel.train_id == TrainModel.train_id)
+            .filter(
+                ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]),
+                ScheduleModel.optimized_time <= current_time
+            )
+        )
+        
+        if section_id:
+            query = query.filter(ScheduleModel.section_id == section_id)
+            
+        departed_schedules = query.all()
+        
+        departed_trains = []
+        for schedule in departed_schedules:
+            # Update status to DEPARTED
+            schedule.status = ScheduleStatus.DEPARTED
+            schedule.updated_at = current_time
+            
+            # Get train details
+            train = db.query(TrainModel).filter(TrainModel.train_id == schedule.train_id).first()
+            if train:
+                departed_trains.append({
+                    "train_id": train.train_id,
+                    "scheduled_departure": schedule.optimized_time,
+                    "actual_departure": current_time,
+                    "section_id": schedule.section_id,
+                    "platform_id": schedule.platform_id,
+                    "delay_minutes": schedule.delay_minutes,
+                    "origin": train.origin,
+                    "destination": train.destination
+                })
+        
+        db.commit()
+        
+        # Broadcast departure notifications for each departed train
+        for train_info in departed_trains:
+            await broadcast_train_departure({
+                "train_id": train_info["train_id"],
+                "message": f"{train_info['train_id']} train is departed",
+                "scheduled_departure": train_info["scheduled_departure"],
+                "actual_departure": train_info["actual_departure"],
+                "section_id": train_info["section_id"],
+                "origin": train_info["origin"],
+                "destination": train_info["destination"],
+                "delay_minutes": train_info["delay_minutes"]
+            })
+        
+        logger.info(f"Marked {len(departed_trains)} trains as departed and sent notifications")
+        
+        return {
+            "departed_trains": departed_trains,
+            "count": len(departed_trains),
+            "check_time": current_time
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to check departed trains: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check departed trains: {str(e)}"
         )
 
 @router.post("/override")

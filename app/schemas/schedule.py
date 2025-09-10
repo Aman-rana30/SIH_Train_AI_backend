@@ -23,7 +23,7 @@ class ScheduleStatus(str, Enum):
 class ScheduleBase(BaseModel):
     """Base schedule schema."""
     schedule_id: str = Field(..., description="Unique schedule identifier")
-    train_id: int = Field(..., description="Associated train ID")
+    train_id: str = Field(..., description="Associated train ID (human-readable, e.g., '14505')")
     planned_time: datetime = Field(..., description="Original planned time")
     optimized_time: datetime = Field(..., description="AI-optimized time")
     section_id: str = Field(..., description="Railway section")

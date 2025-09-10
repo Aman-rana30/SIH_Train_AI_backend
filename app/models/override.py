@@ -26,7 +26,7 @@ class Override(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     override_id = Column(String(50), unique=True, index=True, nullable=False)
-    train_id = Column(Integer, nullable=False)  # Temporarily removed foreign key for testing
+    train_id = Column(String(50), nullable=False)  # Store human-readable train_id
     controller_decision = Column(Text, nullable=False)
     ai_recommendation = Column(Text)
     reason = Column(Text)

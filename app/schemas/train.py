@@ -13,8 +13,13 @@ if TYPE_CHECKING:
     from .override import Override
 
 class TrainType(str, Enum):
-    """Train type enumeration."""
+    """Core train operational categories."""
     EXPRESS = "Express"
+    SUPERFAST = "Superfast"
+    SHATABDI = "Shatabdi"
+    RAJDHANI = "Rajdhani"
+    DURONTO = "Duronto"
+    GARIB_RATH = "GaribRath"
     PASSENGER = "Passenger"
     FREIGHT = "Freight"
     LOCAL = "Local"
@@ -23,7 +28,8 @@ class TrainType(str, Enum):
 class TrainBase(BaseModel):
     """Base train schema with common fields."""
     train_id: str = Field(..., description="Unique train identifier")
-    type: TrainType = Field(..., description="Train type")
+    type: TrainType = Field(..., description="Core train operational category")
+    sub_type: Optional[str] = Field(None, description="Optional specific train name/variant (e.g., 'Hirakund Express', 'Swarna Jayanti')")
     arrival_time: Union[datetime, str] = Field(..., description="Scheduled arrival time")
     departure_time: Union[datetime, str] = Field(..., description="Scheduled departure time")
     section_id: str = Field(..., description="Railway section identifier")
@@ -54,6 +60,7 @@ class TrainCreate(TrainBase):
 class TrainUpdate(BaseModel):
     """Schema for updating train information."""
     type: Optional[TrainType] = None
+    sub_type: Optional[str] = None
     arrival_time: Optional[Union[datetime, str]] = None
     departure_time: Optional[Union[datetime, str]] = None
     section_id: Optional[str] = None
