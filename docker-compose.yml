@@ -6,20 +6,21 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:Amandeep27@localhost:5432/train_control
+      - DATABASE_URL=postgresql://sih:j2Z2TMm3eXlmB2FB9SIlgLgnaMNBRxt6@dpg-d2rioi3e5dus73blboug-a/train_control
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - .:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "alembic upgrade head && 
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   db:
-    image: postgres:15
+    image: postgres:17
     environment:
       - POSTGRES_DB=train_control
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=Amandeep27
+      - POSTGRES_USER=sih
+      - POSTGRES_PASSWORD=j2Z2TMm3eXlmB2FB9SIlgLgnaMNBRxt6
     ports:
       - "5432:5432"
     volumes:
