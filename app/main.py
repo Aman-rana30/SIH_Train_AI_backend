@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api.routes import schedule, metrics, websocket
+from app.api.routes import schedule, metrics, websocket, map_simulation
 from app.db.session import engine
 from app.db.base import Base
 
@@ -109,6 +109,12 @@ app.include_router(
     websocket.router,
     prefix="/ws",
     tags=["websocket"]
+)
+
+app.include_router(
+    map_simulation.router,
+    prefix=f"{settings.api_v1_prefix}/map",
+    tags=["map-simulation"]
 )
 
 
