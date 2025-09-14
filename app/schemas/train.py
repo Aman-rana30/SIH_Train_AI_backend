@@ -144,6 +144,17 @@ class DisruptionEvent(BaseModel):
     description: Optional[str] = Field(None, description="Description of the disruption event")
     duration_minutes: Optional[int] = Field(60, description="Duration of the disruption in minutes")
 
+    # Defensive: coerce numeric IDs to string for compatibility
+    @field_validator('affected_trains', mode='before')
+    @classmethod
+    def coerce_affected_trains(cls, v):
+        if v is None:
+            return v
+        try:
+            return [str(x) for x in v]
+        except Exception:
+            return v
+
     model_config = ConfigDict(from_attributes=True)
 
 

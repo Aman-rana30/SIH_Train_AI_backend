@@ -1136,6 +1136,66 @@ async def whatif_analysis(
 
         )
 
+@router.get("/throughput/today")
+async def get_today_throughput(
+    section_id: Optional[str] = Query(default=None, description="Filter by section_id"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get throughput data from 00:00 to current time for today.
+    
+    Args:
+        section_id: Optional section filter
+        db: Database session
+        
+    Returns:
+        Throughput data with count and time range
+    """
+    try:
+        # Get current time in IST
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_time = datetime.now(IST)
+        
+        # Set start time to 00:00 today
+        start_time = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Calculate hours elapsed since 00:00
+        hours_elapsed = (current_time - start_time).total_seconds() / 3600
+        
+        logger.info(f"🕐 THROUGHPUT: Calculating from {start_time.strftime('%H:%M')} to {current_time.strftime('%H:%M')} ({hours_elapsed:.1f} hours)")
+        
+        # Query schedules that have completed (departed) within this time range
+        query = db.query(ScheduleModel).filter(
+            ScheduleModel.status == ScheduleStatus.DEPARTED,
+            ScheduleModel.optimized_time >= start_time,
+            ScheduleModel.optimized_time <= current_time
+        )
+        
+        if section_id:
+            query = query.filter(ScheduleModel.section_id == section_id)
+            logger.info(f"🚂 Filtering by section: {section_id}")
+        
+        completed_schedules = query.all()
+        throughput_count = len(completed_schedules)
+        
+        logger.info(f"📊 Found {throughput_count} completed trains from {start_time.strftime('%H:%M')} to {current_time.strftime('%H:%M')}")
+        
+        return {
+            "throughput_count": throughput_count,
+            "hours_elapsed": round(hours_elapsed, 1),
+            "start_time": start_time.isoformat(),
+            "current_time": current_time.isoformat(),
+            "time_range_display": f"{start_time.strftime('%H:%M')}–{current_time.strftime('%H:%M')}",
+            "section_id": section_id
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Throughput calculation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Throughput calculation failed: {str(e)}"
+        )
+
 @router.get("/current")
 
 async def get_current_schedule(

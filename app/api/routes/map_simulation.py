@@ -1,9 +1,11 @@
 """
 Map simulation API routes integrated into Train AI Backend.
+
 Provides real-time train positions, railway tracks, and conflict detection.
+Updated with Python API and WebSocket integration.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Optional, Dict
 import requests
 import logging
@@ -11,6 +13,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from app.core.dependencies import get_db
 
 # Indian Standard Time timezone (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -51,9 +55,9 @@ class TrainPosition(BaseModel):
     priority: TrainPriority
     current_lat: float
     current_lon: float
-    progress: float  # 0.0 to 1.0 along the route
-    speed: float  # km/h
-    status: str  # "moving", "delayed", "stopped"
+    progress: float # 0.0 to 1.0 along the route
+    speed: float # km/h
+    status: str # "moving", "delayed", "stopped"
     is_conflicted: bool
     next_junction: Optional[str] = None
     eta_next_junction: Optional[datetime] = None
@@ -72,7 +76,7 @@ BBOX = "30.8,75.4,31.4,75.9"
 
 # Mock data for fallback when APIs are unavailable
 MOCK_TRACK_DATA = [
-    {"lat": 31.3260, "lon": 75.5762},  # Jalandhar
+    {"lat": 31.3260, "lon": 75.5762}, # Jalandhar
     {"lat": 31.3200, "lon": 75.5900},
     {"lat": 31.3150, "lon": 75.6100},
     {"lat": 31.3100, "lon": 75.6300},
@@ -88,7 +92,7 @@ MOCK_TRACK_DATA = [
     {"lat": 31.2600, "lon": 75.8300},
     {"lat": 31.2550, "lon": 75.8500},
     {"lat": 31.2500, "lon": 75.8700},
-    {"lat": 31.1814, "lon": 75.8458}   # Ludhiana
+    {"lat": 31.1814, "lon": 75.8458} # Ludhiana
 ]
 
 MOCK_STATIONS_DATA = [
@@ -195,7 +199,6 @@ async def get_railway_track():
     try:
         # Try to get track data from Overpass API
         data = make_overpass_request(TRACK_QUERY)
-        
         track_points = []
         
         if data and data.get("elements"):
@@ -214,7 +217,6 @@ async def get_railway_track():
             track_points = [TrackPoint(lat=point["lat"], lon=point["lon"]) for point in MOCK_TRACK_DATA]
         
         logger.info(f"Returning {len(track_points)} track points")
-        
         return TrackResponse(
             track_polyline=track_points,
             total_points=len(track_points),
@@ -240,7 +242,6 @@ async def get_railway_stations():
     try:
         # Try to get stations data from Overpass API
         data = make_overpass_request(STATIONS_QUERY)
-        
         stations = []
         
         if data and data.get("elements"):
@@ -250,7 +251,7 @@ async def get_railway_stations():
                     tags = element.get("tags", {})
                     
                     # Get station name
-                    name = (tags.get("name") or 
+                    name = (tags.get("name") or
                            tags.get("railway:name") or
                            f"Station at {element['lat']:.4f}, {element['lon']:.4f}")
                     
@@ -280,7 +281,6 @@ async def get_railway_stations():
             stations = [Station(**station_data) for station_data in MOCK_STATIONS_DATA]
         
         logger.info(f"Returning {len(stations)} stations")
-        
         return StationsResponse(
             stations=stations,
             total_stations=len(stations)
@@ -297,7 +297,7 @@ async def get_railway_stations():
         )
 
 @router.get("/train-positions", response_model=TrainPositionsResponse)
-async def get_train_positions():
+async def get_train_positions(db: Session = Depends(get_db)):
     """
     Get real-time positions of all trains integrated with AI backend data.
     This endpoint bridges the map simulation with actual train schedule data.
@@ -308,18 +308,10 @@ async def get_train_positions():
         # Import here to avoid circular imports
         from app.models.train import Train as TrainModel
         from app.models.schedule import Schedule as ScheduleModel, ScheduleStatus
-        from app.core.dependencies import get_db
-        from sqlalchemy.orm import Session
-        
-        # Get database session (simplified for integration)
-        # In production, you'd inject this properly
-        from app.db.session import SessionLocal
-        db = SessionLocal()
         
         try:
             # Get current time in IST
             current_time = datetime.now(IST)
-            
             # Get active schedules from the next 8 hours
             eight_hours_later = current_time + timedelta(hours=8)
             
@@ -328,7 +320,8 @@ async def get_train_positions():
                 db.query(ScheduleModel, TrainModel)
                 .join(TrainModel, ScheduleModel.train_id == TrainModel.train_id)
                 .filter(
-                    ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING]),
+                    TrainModel.active == True,
+                    ScheduleModel.status.in_([ScheduleStatus.WAITING, ScheduleStatus.MOVING, ScheduleStatus.DEPARTED]),
                     ScheduleModel.planned_time >= current_time,
                     ScheduleModel.planned_time <= eight_hours_later
                 )
@@ -339,18 +332,50 @@ async def get_train_positions():
             track_data = await get_railway_track()
             track_points = [{"lat": point.lat, "lon": point.lon} for point in track_data.track_polyline]
             
+            # Load sections to compute realistic travel times
+            from app.models.section import Section as SectionModel
+            sections = db.query(SectionModel).all()
+            sections_map = {s.section_id: s for s in sections}
+            
             # Calculate positions for all active trains
             train_positions = []
             for schedule, train in active_schedules:
+                # Compute estimated journey time using section length and speed
+                estimated_minutes = None
+                sec = sections_map.get(schedule.section_id)
+                if sec:
+                    try:
+                        # Base travel time = distance / speed
+                        estimated_minutes = (sec.length_km / max(1, sec.max_speed_kmh)) * 60.0
+                        
+                        # Adjust for track condition
+                        cond = getattr(sec, 'track_condition', None)
+                        cond_name = getattr(cond, 'name', str(cond)) if cond is not None else None
+                        if cond_name == 'WORN':
+                            estimated_minutes *= 1.10
+                        elif cond_name == 'MAINTENANCE':
+                            estimated_minutes *= 1.25
+                        
+                        # Adjust for weather
+                        weather = getattr(sec, 'current_weather', None)
+                        weather_name = getattr(weather, 'name', str(weather)) if weather is not None else None
+                        if weather_name == 'HEAVY_RAIN':
+                            estimated_minutes *= 1.15
+                        elif weather_name == 'FOG':
+                            estimated_minutes *= 1.10
+                            
+                    except Exception:
+                        estimated_minutes = None
+                
                 # Calculate current position based on schedule and time
                 position = calculate_train_position_from_schedule(
-                    schedule, train, track_points, current_time
+                    schedule, train, track_points, current_time, estimated_minutes
                 )
+                
                 if position:
                     train_positions.append(position)
             
             logger.info(f"Calculated positions for {len(train_positions)} trains")
-            
             return TrainPositionsResponse(
                 trains=train_positions,
                 total_trains=len(train_positions),
@@ -358,7 +383,7 @@ async def get_train_positions():
             )
             
         finally:
-            db.close()
+            pass
             
     except Exception as e:
         logger.error(f"Error calculating train positions: {e}")
@@ -367,7 +392,184 @@ async def get_train_positions():
             detail=f"Error calculating train positions: {str(e)}"
         )
 
-def calculate_train_position_from_schedule(schedule, train, track_points: List[dict], current_time: datetime) -> Optional[TrainPosition]:
+@router.get("/train-positions-python", response_model=TrainPositionsResponse)
+async def get_train_positions_from_python(db: Session = Depends(get_db)):
+    """
+    Get real-time train positions from Python position calculator with WebSocket support
+    Fetches data from Flask API server running the position calculator
+    """
+    logger.info("Fetching train positions from Python calculator")
+    
+    try:
+        # URL of your Python Flask API server
+        PYTHON_API_URL = "http://localhost:5000/api/train-positions"
+        
+        # First, try to update Python API with latest database data
+        try:
+            await update_python_api_with_db_data(db)
+        except Exception as update_error:
+            logger.warning(f"Could not update Python API with DB data: {update_error}")
+        
+        # Fetch real-time positions from Python API
+        try:
+            response = requests.get(PYTHON_API_URL, timeout=10)
+            response.raise_for_status()
+            python_data = response.json()
+            
+            logger.info(f"Successfully fetched {len(python_data.get('trains', []))} trains from Python API")
+            
+            # Convert Python API response to our expected format
+            train_positions = []
+            for train_data in python_data.get('trains', []):
+                # Map priority strings to enum values
+                priority_map = {
+                    'EXPRESS': TrainPriority.EXPRESS,
+                    'PASSENGER': TrainPriority.PASSENGER, 
+                    'FREIGHT': TrainPriority.FREIGHT
+                }
+                
+                priority = priority_map.get(train_data.get('priority', 'PASSENGER'), TrainPriority.PASSENGER)
+                
+                # Parse ETA if present
+                eta_next_junction = None
+                if train_data.get('eta_next_junction'):
+                    try:
+                        eta_next_junction = datetime.fromisoformat(train_data['eta_next_junction'].replace('Z', '+00:00'))
+                    except ValueError:
+                        eta_next_junction = None
+                
+                train_position = TrainPosition(
+                    train_id=train_data.get('train_id', ''),
+                    train_name=train_data.get('train_name', ''),
+                    priority=priority,
+                    current_lat=train_data.get('current_lat', 31.3260),
+                    current_lon=train_data.get('current_lon', 75.5762),
+                    progress=train_data.get('progress', 0.0),
+                    speed=train_data.get('speed', 0.0),
+                    status=train_data.get('status', 'stopped'),
+                    is_conflicted=train_data.get('is_conflicted', False),
+                    next_junction=train_data.get('next_junction'),
+                    eta_next_junction=eta_next_junction
+                )
+                train_positions.append(train_position)
+            
+            return TrainPositionsResponse(
+                trains=train_positions,
+                total_trains=len(train_positions),
+                simulation_time=datetime.fromisoformat(python_data.get('simulation_time', datetime.now(IST).isoformat()).replace('Z', '+00:00'))
+            )
+            
+        except requests.RequestException as e:
+            logger.warning(f"Python API not available: {e}. Falling back to database integration.")
+            # Fallback to existing database integration
+            return await get_train_positions(db)
+    
+    except Exception as e:
+        logger.error(f"Error fetching from Python API: {e}")
+        # Fallback to existing method
+        return await get_train_positions(db)
+
+@router.post("/update-python-data")
+async def update_python_train_data(db: Session = Depends(get_db)):
+    """
+    Update Python API with latest train data from database
+    This endpoint pushes current train data to the Python position calculator
+    """
+    logger.info("Updating Python API with database train data")
+    
+    try:
+        result = await update_python_api_with_db_data(db)
+        return result
+    except Exception as e:
+        logger.error(f"Error updating Python API: {e}")
+        return {
+            "error": "Failed to update Python API",
+            "message": str(e)
+        }, 500
+
+async def update_python_api_with_db_data(db: Session):
+    """Helper function to update Python API with database data"""
+    from app.models.train import Train as TrainModel
+    
+    # Get current time in IST
+    current_time = datetime.now(IST)
+    eight_hours_later = current_time + timedelta(hours=8)
+    
+    # Fetch active trains from database
+    active_trains = (
+        db.query(TrainModel)
+        .filter(
+            TrainModel.active == True,
+            TrainModel.departure_time >= current_time,
+            TrainModel.departure_time <= eight_hours_later
+        )
+        .all()
+    )
+    
+    # Convert to Python API format
+    trains_data = {
+        "trains": []
+    }
+    
+    for train in active_trains:
+        train_dict = {
+            "train_id": train.train_id,
+            "type": train.type.value if hasattr(train.type, 'value') else str(train.type),
+            "arrival_time": train.arrival_time.isoformat() if train.arrival_time else None,
+            "departure_time": train.departure_time.isoformat() if train.departure_time else None,
+            "section_id": train.section_id,
+            "platform_need": train.platform_need,
+            "priority": train.priority,
+            "origin": train.origin,
+            "destination": train.destination
+        }
+        trains_data["trains"].append(train_dict)
+    
+    # Send to Python API
+    PYTHON_API_URL = "http://localhost:5000/api/train-data"
+    
+    response = requests.post(PYTHON_API_URL, json=trains_data, timeout=10)
+    response.raise_for_status()
+    result = response.json()
+    
+    logger.info(f"Successfully updated Python API with {len(trains_data['trains'])} trains")
+    
+    return {
+        "message": "Python API updated successfully",
+        "trains_sent": len(trains_data['trains']),
+        "python_response": result,
+        "timestamp": current_time.isoformat()
+    }
+
+@router.get("/websocket-status")
+async def get_websocket_status():
+    """
+    Get WebSocket connection status from Python API
+    """
+    try:
+        response = requests.get("http://localhost:5000/api/status", timeout=5)
+        if response.status_code == 200:
+            status_data = response.json()
+            return {
+                "python_api_status": "running",
+                "websocket_enabled": status_data.get("websocket_enabled", False),
+                "websocket_clients": status_data.get("websocket_clients", 0),
+                "current_trains": status_data.get("current_trains", 0),
+                "data_file": status_data.get("data_file", "unknown"),
+                "last_check": datetime.now(IST).isoformat()
+            }
+        else:
+            return {
+                "python_api_status": "error",
+                "message": f"HTTP {response.status_code}"
+            }
+    except requests.RequestException as e:
+        return {
+            "python_api_status": "offline",
+            "message": str(e)
+        }
+
+def calculate_train_position_from_schedule(schedule, train, track_points: List[dict], current_time: datetime, estimated_journey_time: Optional[float] = None) -> Optional[TrainPosition]:
     """Calculate current position of a train based on its schedule and current time"""
     try:
         # Determine train priority based on type
@@ -388,31 +590,33 @@ def calculate_train_position_from_schedule(schedule, train, track_points: List[d
         departure_time = optimized_departure if optimized_departure else planned_departure
         
         # Calculate elapsed time since departure (or time until departure)
-        time_diff = (current_time - departure_time).total_seconds() / 60  # minutes
+        time_diff = (current_time - departure_time).total_seconds() / 60 # minutes
         
         # Determine status and position
-        if time_diff < -30:  # More than 30 minutes before departure
+        if time_diff < -30: # More than 30 minutes before departure
             status = "stopped"
             progress = 0.0
             speed = 0.0
-        elif time_diff < 0:  # Before departure but close
+        elif time_diff < 0: # Before departure but close
             status = "stopped"
             progress = 0.0
             speed = 0.0
-        else:  # After departure time
+        else: # After departure time
             # Calculate progress based on elapsed time and estimated journey time
-            # Assume average speed of 60 km/h for journey time estimation
-            estimated_journey_time = 90  # minutes for Jalandhar-Ludhiana
-            progress = min(time_diff / estimated_journey_time, 1.0)
+            # Prefer DB-derived section travel time; fallback to static estimate
+            journey_minutes = estimated_journey_time if (estimated_journey_time and estimated_journey_time > 0) else 90.0
+            progress = min(time_diff / journey_minutes, 1.0)
             
             # Determine status
             delay_minutes = schedule.delay_minutes or 0
             if delay_minutes > 0:
                 status = "delayed"
-                speed = 45.0  # Reduced speed for delayed trains
+                # Reduced speed if delayed (simple heuristic)
+                speed = max(30.0, (len(track_points) / journey_minutes) * 45.0)
             else:
                 status = "moving"
-                speed = 60.0  # Normal speed
+                # Approximate speed proportional to progress over time
+                speed = max(30.0, (len(track_points) / journey_minutes) * 60.0)
         
         # Get current position along track
         if progress >= 1.0:
@@ -429,6 +633,9 @@ def calculate_train_position_from_schedule(schedule, train, track_points: List[d
         # Check if train is conflicted (has delays)
         is_conflicted = (schedule.delay_minutes or 0) > 0
         
+        # Estimated arrival based on journey time used in progress calc
+        eta_minutes = (estimated_journey_time if (estimated_journey_time and estimated_journey_time > 0) else 90.0)
+        
         return TrainPosition(
             train_id=train.train_id,
             train_name=f"{train.train_id} ({train.origin} - {train.destination})",
@@ -440,7 +647,7 @@ def calculate_train_position_from_schedule(schedule, train, track_points: List[d
             status=status,
             is_conflicted=is_conflicted,
             next_junction=train.destination,
-            eta_next_junction=departure_time + timedelta(minutes=90)  # Estimated arrival
+            eta_next_junction=departure_time + timedelta(minutes=eta_minutes)
         )
         
     except Exception as e:
@@ -451,23 +658,19 @@ def calculate_train_position_from_schedule(schedule, train, track_points: List[d
 async def set_simulation_speed(multiplier: float):
     """Set simulation speed multiplier"""
     global SIMULATION_SPEED_MULTIPLIER
-    
     if multiplier < 0.1 or multiplier > 10.0:
         raise HTTPException(status_code=400, detail="Speed multiplier must be between 0.1 and 10.0")
     
     SIMULATION_SPEED_MULTIPLIER = multiplier
     logger.info(f"Simulation speed set to {multiplier}x")
-    
     return {"message": f"Simulation speed set to {multiplier}x", "multiplier": multiplier}
 
 @router.post("/simulation/reset")
 async def reset_simulation():
     """Reset simulation to start time"""
     global SIMULATION_START_TIME
-    
     SIMULATION_START_TIME = datetime.now(IST)
     logger.info("Simulation reset")
-    
     return {"message": "Simulation reset", "start_time": SIMULATION_START_TIME}
 
 @router.get("/route-info")

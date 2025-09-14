@@ -2,7 +2,7 @@
 Pydantic schemas for schedule-related API operations.
 """
 from __future__ import annotations
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from datetime import datetime
 from typing import Optional
 from enum import Enum
@@ -28,6 +28,12 @@ class ScheduleBase(BaseModel):
     optimized_time: datetime = Field(..., description="AI-optimized time")
     section_id: str = Field(..., description="Railway section")
     platform_id: Optional[str] = Field(None, description="Assigned platform")
+
+    # Defensive: ensure train_id is always coerced to string
+    @field_validator('train_id', mode='before')
+    @classmethod
+    def ensure_train_id_str(cls, v):
+        return str(v) if v is not None else v
 
 
 class ScheduleCreate(ScheduleBase):
