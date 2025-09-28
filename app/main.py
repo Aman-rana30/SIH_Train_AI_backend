@@ -11,9 +11,13 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api.routes import schedule, metrics, websocket, map_simulation
+from app.api.routes import schedule, metrics, websocket, map_simulation, settings as settings_routes
 from app.db.session import engine
 from app.db.base import Base
+
+# Import all models to ensure they are registered with SQLAlchemy
+from app.models.user import User
+from app.models.settings import UserSettings
 
 # Configure logging
 logging.basicConfig(
@@ -115,6 +119,12 @@ app.include_router(
     map_simulation.router,
     prefix=f"{settings.api_v1_prefix}/map",
     tags=["map-simulation"]
+)
+
+app.include_router(
+    settings_routes.router,
+    prefix=f"{settings.api_v1_prefix}/settings",
+    tags=["settings"]
 )
 
 
